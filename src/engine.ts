@@ -45,7 +45,8 @@ export async function processJob(env:Env,job:Job){
    if(job.kind==='research'&&!await claimResearchBusiness(env,lead.id,s.dailyResearchLimit)){
     await run(env,"UPDATE jobs SET state='paused',error='Daily business research allowance reached',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
    }
-   await draftLead(env,s,lead,job.kind==='reply'?'reply':job.kind==='followup'?'followup':'initial',payload.inboundId,job.kind==='rewrite'?{id:payload.draftId,version:payload.version}:undefined,w);
+   const kind=job.kind==='reply'?'reply':job.kind==='followup'?'followup':job.kind==='rewrite'&&['followup','reply'].includes(payload.kind)?payload.kind:'initial';
+   await draftLead(env,s,lead,kind,payload.inboundId,job.kind==='rewrite'?{id:payload.draftId,version:payload.version}:undefined,w);
   }else throw new Error('Retired or unsupported task type');
   await run(env,"UPDATE jobs SET state='complete',error=NULL,next_run_at=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return result;
  }catch(error){
@@ -63,7 +64,7 @@ export async function processAvailableJobs(env:Env){
  if(!env.OPENAI_API_KEY)return;
  // One paid stage per cycle stays within Workers Free's 50 D1 query limit.
  // Bounded discovery imports also persist only three candidates per invocation.
- const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'discover_search' THEN 2 ELSE 3 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`);
+ const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`);
  if(job)await processJob(env,job);
 }
 export async function tick(env:Env){

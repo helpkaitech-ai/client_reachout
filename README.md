@@ -57,6 +57,8 @@ Assessment calls reserve 1,600 output tokens, including reasoning headroom: the 
 
 Follow-up drafts are prepared automatically after a send, ahead of their due dates. **Open Follow Up** opens the next draft and shows its due date and sequence number. The default schedule is days **4, 10 and 18**, with a hard maximum of **three follow-ups**. The offsets imply gaps of 4, 6 and 8 days after actual sends, so delayed approvals do not bunch messages together. Owner approval is required for each draft; early approval schedules it for its due date. A fresh thread check before dispatch stops sending if an incoming message is found. Existing source evidence, product details, remarks and the prior conversation inform each OpenAI draft. Configured daily email and monthly OpenAI limits continue to apply.
 
+**Improve this email** works for introductions, follow-ups and replies. It supplies the current draft and its quality issue to OpenAI, preserves the conversation kind and follow-up due date, and leaves the revised version unapproved. Access to internal systems or customer data must remain conditional on future agreement and authorization.
+
 The previously verified mailbox is `data@prepyr.com`; `rushi@prepyr.com` is its configured sending alias. Sign into the underlying Google Workspace mailbox to view Sent mail. An alias is not a separate Google login. The migration preserves the existing OAuth connection and sender settings; sender authorization was checked in live release validation.
 
 ## Development and deployment

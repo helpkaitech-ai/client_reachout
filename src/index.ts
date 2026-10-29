@@ -127,8 +127,8 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
   const lead=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',d.lead_id))!;
   if(action==='reconcile'){await reconcile(env,s,id);return {ok:true};}
   if(action==='rewrite'){
-   if(d.status!=='pending'||d.kind!=='initial'||d.version!==input.version)throw new Error('Only the current unsent introduction can be improved. Refresh and try again.');
-   return {job:await enqueue(env,'rewrite',lead.id,{draftId:id,version:d.version},`rewrite:${id}:${d.version}`)};
+   if(d.status!=='pending'||d.version!==input.version)throw new Error('Only the current unsent draft can be improved. Refresh and try again.');
+   return {job:await enqueue(env,'rewrite',lead.id,{draftId:id,version:d.version,kind:d.kind},`rewrite:${id}:${d.version}`)};
   }
   // A repeated approval request returns the existing outcome and never sends twice.
   if(action==='approve'&&['sent','sending','uncertain','approved'].includes(d.status))return {ok:true,status:d.status,message:d.status==='sent'?'Already sent through Gmail.':d.status==='approved'?'Already approved; dispatch will continue automatically.':'Dispatch is in progress or awaiting reconciliation. Do not send again.'};

@@ -111,6 +111,17 @@ test('a deliberately retried incomplete assessment reuses completed draft output
  }finally{globalThis.fetch=original;close();}
 });
 
+test('improving a held follow-up preserves its kind, due date and sequence and supplies the quality issue to OpenAI',async()=>{
+ const {env,close}=database(),original=globalThis.fetch,{fetcher,calls}=mockOpenAI();env.OPENAI_API_KEY='test';globalThis.fetch=fetcher;
+ try{
+  const lead=await readyLead(env),draft=await readyDraft(env,lead),due=new Date(Date.now()+4*86400000).toISOString();await run(env,"UPDATE leads SET status='contacted',next_followup_at=? WHERE id=?",due,lead.id);await run(env,"UPDATE drafts SET kind='followup',status='pending',quality_hold='Do not assume access to order status',send_after=? WHERE id=?",due,draft.id);
+  const background=await readyLead(env,{company:'Background research',website:'https://background.example.com',email:'team@background.example.com'});await run(env,"INSERT INTO jobs(id,kind,lead_id,created_at,updated_at) VALUES('background','research',?,'2026-01-01T00:00:00.000Z',?)",background.id,now());
+  const cookie=await login(env);assert.equal((await req(env,`/api/drafts/${draft.id}/rewrite`,{version:1},cookie)).status,200);for(let i=0;i<3;i++)await processAvailableJobs(env);assert.equal((await one<any>(env,"SELECT attempts FROM jobs WHERE id='background'")).attempts,0);
+  const updated=await one<any>(env,'SELECT * FROM drafts WHERE id=?',draft.id);assert.equal(updated.kind,'followup');assert.equal(updated.version,2);assert.equal(updated.send_after,due);assert.equal(updated.approved_hash,null);assert.equal(updated.quality_hold,'');assert.equal((await all(env,'SELECT * FROM drafts')).length,1);
+  const input=JSON.parse(calls.find(c=>c.text?.format?.name==='relay_draft_generate').input);assert.equal(input.kind,'followup');assert.equal(input.followupNumber,1);assert.equal(input.revisionRequest.qualityHold,'Do not assume access to order status');assert.equal((await one<any>(env,'SELECT followup_count FROM leads WHERE id=?',lead.id)).followup_count,0);
+ }finally{globalThis.fetch=original;close();}
+});
+
 test('real notification dropdown shows escaped previews, persists read state and opens the correct prospect conversation',async()=>{
  const {env,close}=database();let dom:JSDOM|undefined;try{
   const lead=await readyLead(env),draft=await readyDraft(env,lead);await run(env,"UPDATE drafts SET status='sent' WHERE id=?",draft.id);await ingestMessage(env,lead,message('ui-reply'));await notifyInApp(env,{key:'escaped',kind:'reply',leadId:lead.id,title:'<img src=x onerror=alert(1)>',body:'<script>bad()</script>'});const cookie=await login(env);
