@@ -51,6 +51,10 @@ The scheduler performs at most one paid stage per minute, imports at most three 
 
 ## Gmail identity
 
+The top-right notification bell shows unread replies, automatic replies, bounces, opt-outs and prepared follow-up drafts across all product workspaces. Notifications persist between logins; click one to mark it read and open the matching prospect, or use **Mark all read**. Gmail inbox sync runs on the minute scheduler and the notification dropdown refreshes every 30 seconds while Relay is visible. Delivery acceptance remains **Sent**; Relay does not claim inbox delivery or email opening. A reply, bounce, automatic response or opt-out stops the follow-up sequence, and a human reply queues a response draft for owner review.
+
+Follow-up drafts are prepared automatically after a send, ahead of their due dates. **Open Follow Up** opens the next draft and shows its due date and sequence number. The default schedule is days **4, 10 and 18**, with a hard maximum of **three follow-ups**. The offsets imply gaps of 4, 6 and 8 days after actual sends, so delayed approvals do not bunch messages together. Owner approval is required for each draft; early approval schedules it for its due date. A fresh thread check before dispatch stops sending if an incoming message is found. Existing source evidence, product details, remarks and the prior conversation inform each OpenAI draft. Configured daily email and monthly OpenAI limits continue to apply.
+
 The previously verified mailbox is `data@prepyr.com`; `rushi@prepyr.com` is its configured sending alias. Sign into the underlying Google Workspace mailbox to view Sent mail. An alias is not a separate Google login. The migration preserves the existing OAuth connection and sender settings; sender authorization was checked in live release validation.
 
 ## Development and deployment

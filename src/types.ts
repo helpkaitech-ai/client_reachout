@@ -46,7 +46,7 @@ export const defaults: Settings = {
  locationIds:['worldwide'],
  dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,
  openaiBudget:50, discoveryResults:10, discoveryIntervalDays:3, discoveryPausedUntil:'', researchAutomation:true,
- sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10],
+ sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,
  portfolio:'', providerPolicyConfirmed:false,

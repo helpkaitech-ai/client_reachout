@@ -32,6 +32,7 @@ export function approvalProblems(d:Draft,l:Lead,s:Settings):string[] {
  if(l.eligibility!=='eligible'||!l.eligibility_note.trim()) errors.push('Document the outreach eligibility for this business and country');
  if(l.contact_status==='conflicting')errors.push('Public contact evidence conflicts with the recipient; resolve it in contact review');
  if(['suppressed','bounced','closed'].includes(l.status)) errors.push('This business is blocked from outreach');
+ if(d.kind==='followup'&&(l.last_inbound_at||!l.next_followup_at||l.followup_count>=Math.min(3,s.followupDays.length)))errors.push('This follow-up sequence has stopped or reached its limit');
  if(!s.businessAddress.trim())errors.push('Sending activation requires a valid business postal address or qualifying mailbox in Settings');
  if(d.quality_hold)errors.push(d.quality_hold);
  if(!d.subject.trim()||d.subject.length>180||/[\r\n]/.test(d.subject)) errors.push('Use a single-line subject of 1–180 characters');
@@ -57,7 +58,7 @@ export function validateSettings(input:unknown):Settings {
  }
  for(const key of ['dailyNewLimit','dailyTotalLimit','dailyResearchLimit','discoveryResults','discoveryIntervalDays'] as const) if(!Number.isInteger(s[key])) throw new Error(`${key} must be an integer`);
  if(!Number.isInteger(s.sendStartHour)||!Number.isInteger(s.sendEndHour)||s.sendStartHour<0||s.sendEndHour>24||s.sendStartHour>=s.sendEndHour) throw new Error('Invalid sending hours');
- if(!Array.isArray(s.followupDays)||s.followupDays.length>2||s.followupDays.some((n,i)=>!Number.isInteger(n)||n<2||n>30||(i>0&&n<=s.followupDays[i-1]))) throw new Error('Use up to two increasing follow-up days, between 2 and 30');
+ if(!Array.isArray(s.followupDays)||s.followupDays.length>3||s.followupDays.some((n,i)=>!Number.isInteger(n)||n<2||n>30||(i>0&&n<=s.followupDays[i-1]))) throw new Error('Use up to three increasing follow-up days, between 2 and 30');
  for(const k of ['senderName','businessAddress','offerContext','portfolio'] as const) if(typeof s[k]!=='string'||s[k].length>8000) throw new Error(`Invalid ${k}`);
  if(/[\r\n<>]/.test(s.senderName)) throw new Error('Invalid sender name');
  if(typeof s.providerPolicyConfirmed!=='boolean'||typeof s.sendWeekends!=='boolean') throw new Error('Invalid settings switches');

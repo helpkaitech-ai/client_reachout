@@ -15,6 +15,7 @@ import {product,productList,productDetail,saveProduct,scopeProduct,queueProductA
 import {locationOptions, validateLocations, manualSearchPlan} from './locations';
 import { gmail, jsonRequest } from './providers';
 import { prospectPage, prospectDetail } from './prospects';
+import {notificationPage,readNotifications} from './notifications';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -154,8 +155,9 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
    if(!cleanEmail(env.SENDER_EMAIL))errors.push('Set SENDER_EMAIL first');
    if(errors.length)throw new Error(errors.join('; '));
    if(input.contactReviewed===true)await run(env,'UPDATE leads SET eligibility=?,eligibility_note=?,verification=?,verification_note=?,updated_at=? WHERE id=?',reviewedLead.eligibility,reviewedLead.eligibility_note,reviewedLead.verification,reviewedLead.verification_note,now(),lead.id);
-   const scheduled=input.sendAfter?new Date(input.sendAfter):new Date();if(!Number.isFinite(scheduled.getTime()))throw new Error('Invalid schedule');
-   await run(env,"UPDATE drafts SET status='approved',approved_version=version,approved_hash=?,approved_at=?,send_after=?,send_immediately=?,error=NULL,updated_at=? WHERE id=?",await approvalHash(d,lead,s,env.SENDER_EMAIL!),now(),scheduled.toISOString(),input.sendAfter?0:1,now(),id);
+   let scheduled=input.sendAfter?new Date(input.sendAfter):new Date();if(!Number.isFinite(scheduled.getTime()))throw new Error('Invalid schedule');
+   if(d.kind==='followup'&&lead.next_followup_at)scheduled=new Date(Math.max(scheduled.getTime(),Date.parse(lead.next_followup_at)));
+   await run(env,"UPDATE drafts SET status='approved',approved_version=version,approved_hash=?,approved_at=?,send_after=?,send_immediately=?,error=NULL,updated_at=? WHERE id=?",await approvalHash(d,lead,s,env.SENDER_EMAIL!),now(),scheduled.toISOString(),input.sendAfter||scheduled.getTime()>Date.now()?0:1,now(),id);
    await audit(env,'draft_approve',id,`Owner approved version ${d.version} for Gmail dispatch`);
    try{
     if(await syncInbox(env))await sendApproved(env,s,id);
@@ -193,8 +195,8 @@ async function readWorkspace(request:Request,env:Env,saved=false):Promise<Respon
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response> {
  const url=new URL(request.url);const path=url.pathname;
  if(path==='/health'){
-  const tables=await all<{name:string}>(env,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ai_attempts','discovery_batches','products')");
-  const ready=tables.length===3;return json({ok:ready,service:'prepyr-outreach',schemaReady:ready,...(!ready?{code:'SCHEMA_REQUIRED',error:'Database migrations must be applied before this release can run'}:{})},ready?200:503);
+  const tables=await all<{name:string}>(env,"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ai_attempts','discovery_batches','products','app_notifications')");
+  const ready=tables.length===4;return json({ok:ready,service:'prepyr-outreach',schemaReady:ready,...(!ready?{code:'SCHEMA_REQUIRED',error:'Database migrations must be applied before this release can run'}:{})},ready?200:503);
  }
  if(path==='/unsubscribe') {
   const productId=url.searchParams.get('product');if(productId)env=await scopeProduct(env,await product(env,productId));
@@ -212,6 +214,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
  if(!await authenticated(request,env))return json({error:'Sign in to continue'},401);
  if(path==='/api/session'&&request.method==='GET')return json({authenticated:true});
  if(path==='/api/logout'&&request.method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
+ if(path==='/api/notifications'&&request.method==='GET')return json(await notificationPage(env));
+ if(path==='/api/notifications/read'&&request.method==='POST'){try{return json(await readNotifications(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Notification update failed'},400);}}
  if(path==='/api/products'&&request.method==='GET')return json({products:await productList(env)});
  if(path==='/api/products'&&request.method==='POST'){try{return json({product:await saveProduct(env,await body(request,2400000))});}catch(e){return json({error:e instanceof Error?e.message:'Product could not be saved'},400);}}
  const productRoute=path.match(/^\/api\/products\/([a-zA-Z0-9-]+)(?:\/(analyze|approve|run|sender|pause|archive))?$/);

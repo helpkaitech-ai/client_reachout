@@ -3,6 +3,7 @@ import { acquire, release, all, audit, claimDaily, day, enqueue, now, one, run, 
 import { approvalHash, approvalProblems, classifyInbound, cleanEmail, withinWindow } from './policy';
 import { gmail, googleAccessToken, mimeMessage, sendGmail, telegram, ProviderError } from './providers';
 import {requireProductReady,assertProductCurrent} from './products';
+import {notifyInApp} from './notifications';
 
 export async function signature(env:Env,text:string) {
  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(env.SESSION_SECRET||''),{name:'HMAC',hash:'SHA-256'},false,['sign']);
@@ -17,9 +18,9 @@ export function composedBody(d:Draft,s:Settings,url:string) {
 export async function suppress(env:Env,lead:Lead,reason:string) {
  if(lead.email) await run({...env,DB:env.GLOBAL_DB||env.DB},'INSERT OR IGNORE INTO suppressions(email,reason,created_at) VALUES(?,?,?)',lead.email,reason,now());
  await env.DB.batch([
-  env.DB.prepare("UPDATE leads SET status='suppressed',next_followup_at=NULL,updated_at=? WHERE id=?").bind(now(),lead.id),
+  env.DB.prepare("UPDATE leads SET status=?,next_followup_at=NULL,updated_at=? WHERE id=?").bind(reason==='bounce'?'bounced':'suppressed',now(),lead.id),
   env.DB.prepare("UPDATE drafts SET status='cancelled',approved_hash=NULL,updated_at=? WHERE lead_id=? AND status IN ('pending','approved')").bind(now(),lead.id),
-  env.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE lead_id=? AND state='pending'").bind(now(),lead.id)
+  env.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE lead_id=? AND state IN ('pending','running','paused','paused_provider')").bind(now(),lead.id)
  ]);
  await audit(env,'suppressed',lead.id,reason);
 }
@@ -36,6 +37,7 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  if(!draft)return;
  if(work)work.processed++;
  let lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',draft.lead_id);if(!lead)return;
+ if(draft.kind==='followup'&&lead.next_followup_at&&Date.parse(lead.next_followup_at)>Date.now())return;
  if(!draft.send_immediately&&!withinWindow(new Date(),lead.timezone,s))return;
  // Poll this conversation immediately before dispatch. Do not send if inbox polling is unavailable.
  if(lead.thread_id){await syncThread(env,lead);lead=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;}
@@ -71,9 +73,10 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  }
 }
 export async function recordSent(env:Env,s:Settings,d:Draft,l:Lead,providerId:string,threadId:string,messageId:string) {
+ if((await one<Draft>(env,'SELECT * FROM drafts WHERE id=?',d.id))?.status==='sent')return;
  const at=now(); const count=l.followup_count+(d.kind==='followup'?1:0);
  // followupDays are offsets from the first send, so use differences after each follow-up.
- const delay=d.kind==='initial'?s.followupDays[0]:d.kind==='followup'&&count<s.followupDays.length?s.followupDays[count]-s.followupDays[count-1]:null;
+ const delay=d.kind==='initial'?s.followupDays[0]:d.kind==='followup'&&count<Math.min(3,s.followupDays.length)?s.followupDays[count]-s.followupDays[count-1]:null;
  const due=delay&&!l.last_inbound_at?new Date(Date.now()+delay*86400000).toISOString():null;
  await env.DB.batch([
   env.DB.prepare("UPDATE drafts SET status='sent',provider_id=?,error=NULL,updated_at=? WHERE id=?").bind(providerId,at,d.id),
@@ -89,7 +92,8 @@ function bodyText(part:any):string {
  return '';
 }
 export async function ingestMessage(env:Env,lead:Lead,message:any) {
- if(await one(env,'SELECT id FROM messages WHERE id=?',message.id))return;
+ const existing=await one<any>(env,"SELECT * FROM messages WHERE id=? AND direction='inbound'",message.id);
+ if(existing){await inboundNotice(env,lead,message.id,existing.classification,existing.body);return;}
  const headers:Record<string,string>={};for(const h of message.payload?.headers||[])headers[h.name.toLowerCase()]=h.value;
  if(message.labelIds?.includes('SENT'))return;
  const from=cleanEmail(headers.from?.match(/<([^>]+)>/)?.[1]||headers.from);
@@ -97,13 +101,18 @@ export async function ingestMessage(env:Env,lead:Lead,message:any) {
  const body=(bodyText(message.payload||{})||message.snippet||'').slice(0,15000);
  const classification=classifyInbound(body,headers);
  const at=now();
- await run(env,"INSERT OR IGNORE INTO messages(id,lead_id,direction,subject,body,rfc_id,classification,created_at) VALUES(?,?,'inbound',?,?,?,?,?)",message.id,lead.id,headers.subject||'',body,headers['message-id']||null,classification,at);
- await run(env,"UPDATE leads SET last_inbound_at=?,next_followup_at=NULL,status='replied',thread_id=COALESCE(?,thread_id),updated_at=? WHERE id=?",at,message.threadId||null,at,lead.id);
+ const inserted=await run(env,"INSERT OR IGNORE INTO messages(id,lead_id,direction,subject,body,rfc_id,classification,created_at) VALUES(?,?,'inbound',?,?,?,?,?)",message.id,lead.id,headers.subject||'',body,headers['message-id']||null,classification,at);if(!inserted.meta.changes)return;
+ await run(env,"UPDATE leads SET last_inbound_at=?,next_followup_at=NULL,status=?,thread_id=COALESCE(?,thread_id),updated_at=? WHERE id=?",at,classification==='automatic'?'automatic':'replied',message.threadId||null,at,lead.id);
  await run(env,"UPDATE drafts SET status='cancelled',approved_hash=NULL,updated_at=? WHERE lead_id=? AND status IN ('pending','approved')",at,lead.id);
- await run(env,"UPDATE jobs SET state='cancelled',updated_at=? WHERE lead_id=? AND state='pending'",at,lead.id);
+ await run(env,"UPDATE jobs SET state='cancelled',updated_at=? WHERE lead_id=? AND state IN ('pending','running','paused','paused_provider')",at,lead.id);
  if(classification==='optout'||classification==='bounce')await suppress(env,lead,classification);
  else if(classification==='reply')await enqueue(env,'reply',lead.id,{inboundId:message.id},'reply:'+message.id);
+ await inboundNotice(env,lead,message.id,classification,body);
  await audit(env,'inbound_'+classification,lead.id,'Incoming message recorded; any pending sequence was stopped');
+}
+async function inboundNotice(env:Env,lead:Lead,id:string,classification:string,text:string){
+ const label=classification==='bounce'?'Email bounced':classification==='optout'?'Unsubscribed':classification==='automatic'?'Automatic reply received':'Reply received';
+ await notifyInApp(env,{key:'inbound:'+id,kind:classification,leadId:lead.id,title:`${label}: ${lead.company}`,body:text.replace(/\s+/g,' ').slice(0,180)});
 }
 export async function syncThread(env:Env,lead:Lead,token?:string) {
  if(!lead.thread_id)return;

@@ -3,7 +3,7 @@ import { all, one, settings } from './db';
 import { approvalProblems } from './policy';
 
 const records=`WITH rows AS (
- SELECT l.*,d.id draft_id,d.status draft_status,d.kind draft_kind,d.subject draft_subject,d.send_after,
+ SELECT l.*,d.id draft_id,d.status draft_status,d.kind draft_kind,d.subject draft_subject,d.send_after,(SELECT classification FROM messages WHERE lead_id=l.id AND direction='inbound' ORDER BY created_at DESC,id DESC LIMIT 1) inbound_classification,
  CASE
  WHEN l.status IN ('suppressed','closed','bounced') THEN 'stopped'
  WHEN d.status='uncertain' THEN 'check_sent'
@@ -12,6 +12,7 @@ const records=`WITH rows AS (
  WHEN d.status='failed' THEN 'failed'
  WHEN d.status='pending' AND (l.email IS NULL OR l.verification='invalid' OR l.eligibility='ineligible' OR d.quality_hold<>'') THEN 'attention'
  WHEN d.status='pending' THEN 'pending'
+ WHEN l.status='automatic' THEN 'automatic'
  WHEN l.last_inbound_at IS NOT NULL THEN 'replied'
  WHEN l.last_sent_at IS NOT NULL THEN 'sent'
  WHEN d.status IN ('rejected','cancelled') THEN 'not_sent'

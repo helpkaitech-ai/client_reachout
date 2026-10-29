@@ -86,7 +86,8 @@ export async function tick(env:Env){
    await scheduleResearch(env);
    await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
     SELECT 'followup:'||id||':'||followup_count,'followup',id,'{}',?,? FROM leads
-    WHERE next_followup_at<=? AND last_inbound_at IS NULL AND status='contacted'`,now(),now(),now());
+    WHERE next_followup_at IS NOT NULL AND last_inbound_at IS NULL AND status='contacted' AND followup_count<?
+    AND NOT EXISTS(SELECT 1 FROM drafts WHERE lead_id=leads.id AND status IN ('pending','approved','sending','uncertain'))`,now(),now(),Math.min(3,s.followupDays.length));
   }
   const dispatchWork={processed:0};
   if(inboxOk)await sendApproved(env,s,undefined,dispatchWork);
