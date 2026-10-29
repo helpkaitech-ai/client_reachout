@@ -1,0 +1,38 @@
+{
+  "name": "prepyr-outreach",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "prebuild": "node scripts/generate-product-schema.mjs",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "setup": "node scripts/setup.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "google:auth": "node scripts/google-auth.mjs",
+    "telegram:chat": "node scripts/telegram-chat.mjs",
+    "smoke:hosted": "node scripts/smoke-hosted.mjs",
+    "smoke:auth": "node scripts/smoke-auth.mjs",
+    "smoke:auth:local": "node scripts/smoke-auth.mjs --local",
+    "backup:import": "node scripts/import-workspace-backup.mjs",
+    "smoke:workspace": "node scripts/smoke-workspace.mjs",
+    "backup:schema": "node scripts/generate-backup-schema.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "jsdom": "^30.1.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "tldts": "^7.4.16"
+  }
+}

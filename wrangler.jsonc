@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prepyr-outreach", "main": "src/index.ts", "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {"directory":"./public", "binding":"ASSETS", "run_worker_first":true},
+  "account_id": "a82449bb5c3dd15f02d391fb13aafa4b",
+  "d1_databases": [{"binding":"DB","database_name":"prepyr-outreach","database_id":"c205ee07-331d-4e45-9f4d-1e8cfad42354","migrations_dir":"migrations"}],
+  "durable_objects": {"bindings":[{"name":"AUTH_STORE","class_name":"RelayAuthStore"},{"name":"WORKSPACE_BACKUP","class_name":"WorkspaceBackup"},{"name":"PRODUCT_WORKSPACES","class_name":"ProductWorkspace"}]},
+  "migrations": [{"tag":"auth-v1","new_sqlite_classes":["RelayAuthStore"]},{"tag":"workspace-backup-v1","new_sqlite_classes":["WorkspaceBackup"]},{"tag":"products-v1","new_sqlite_classes":["ProductWorkspace"]}],
+  "triggers": {"crons":["* * * * *"]},
+  "observability": {"enabled":true},
+  "vars": {"APP_NAME":"Relay"}
+}

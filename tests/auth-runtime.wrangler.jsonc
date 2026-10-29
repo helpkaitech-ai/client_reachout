@@ -1,0 +1,7 @@
+{
+ "name":"relay-auth-isolated-test","main":"auth-runtime.worker.ts","compatibility_date":"2026-09-01","compatibility_flags":["nodejs_compat"],
+ "assets":{"directory":"../public","binding":"ASSETS","run_worker_first":true},
+ "durable_objects":{"bindings":[{"name":"AUTH_STORE","class_name":"RelayAuthStore"},{"name":"WORKSPACE_BACKUP","class_name":"WorkspaceBackup"}]},
+ "migrations":[{"tag":"auth-v1","new_sqlite_classes":["RelayAuthStore"]},{"tag":"workspace-backup-v1","new_sqlite_classes":["WorkspaceBackup"]}],
+ "vars":{"ADMIN_PASSWORD":"local-auth-outage-fixture-only","SESSION_SECRET":"local-auth-outage-signing-secret-only"}
+}

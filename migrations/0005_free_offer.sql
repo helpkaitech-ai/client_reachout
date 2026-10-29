@@ -1,0 +1,1 @@
+ALTER TABLE drafts ADD COLUMN free_offer TEXT NOT NULL DEFAULT '{}';
