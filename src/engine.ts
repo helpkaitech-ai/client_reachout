@@ -1,6 +1,6 @@
 import type {Env,Job,Lead} from './types';
 import {acquire,all,audit,BudgetPaused,claimResearchBusiness,day,enqueue,now,one,release,run,settings} from './db';
-import {startDiscovery,runDiscovery} from './discovery';
+import {startDiscovery,runDiscovery,discoveryPause} from './discovery';
 import {draftLead} from './research';
 import {notifyDigest,sendApproved,syncInbox} from './mail';
 import {UncertainProviderError,ProviderError} from './providers';
@@ -35,7 +35,10 @@ export async function processJob(env:Env,job:Job){
  try{
   requireProductReady(env);
   const s=await settings(env);let result;
-  if(job.kind==='discover_search')result=await runDiscovery(env,s,job,w);
+  if(job.kind==='discover_search'){
+   const resumeAt=discoveryPause(s);if(resumeAt){await run(env,"UPDATE jobs SET state='paused',error='New prospect searches temporarily paused; existing business research continues',next_run_at=?,updated_at=? WHERE id=? AND state='running'",resumeAt,now(),job.id);return;}
+   result=await runDiscovery(env,s,job,w);
+  }
   else if(['research','rewrite','followup','reply'].includes(job.kind)){
    const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',job.lead_id);if(!lead)throw new Error('Prospect not found');
    if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');

@@ -8,6 +8,7 @@ import {entityKey,importLead} from './leads';
 import {publicUrl} from './policy';
 import {requireProductReady} from './products';
 export {importLead} from './leads';
+export function discoveryPause(s:Settings){return Date.parse(s.discoveryPausedUntil||'')>Date.now()?s.discoveryPausedUntil:null;}
 
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
@@ -15,6 +16,7 @@ export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELE
 export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string){
  requireProductReady(env);
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
+ const resumeAt=discoveryPause(s);if(resumeAt)return {state:'paused',resumeAt,message:`New prospect searches are paused until ${resumeAt}. Existing business research continues.`};
  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') ORDER BY created_at LIMIT 1");
  if(active&&!intent)return {state:active.state,runId:active.id,message:'Your prospect search is already queued or running. Results appear automatically.'};
  const last=await one<any>(env,'SELECT created_at FROM discovery_batches ORDER BY created_at DESC LIMIT 1');

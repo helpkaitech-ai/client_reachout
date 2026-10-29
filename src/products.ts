@@ -14,6 +14,7 @@ export async function scopeProduct(root:Env,p:Product):Promise<Env>{
  const brief=JSON.stringify({name:p.name,website:p.website,description:p.description,remarks:p.remarks,approvedCustomerProfile:JSON.parse(p.analysis||'{}')});
  const env={...root,DB:db,GLOBAL_DB:root.GLOBAL_DB||root.DB,PRODUCT_ID:p.id,PRODUCT_NAME:p.name,PRODUCT_BRIEF:brief,PRODUCT_APPROVED:approved,PRODUCT_REVISION:p.revision,SENDER_EMAIL:p.sender_email,WORKSPACE_BACKUP:undefined};
  const base=await settings(root);
+ env.DISCOVERY_PAUSED_UNTIL=base.discoveryPausedUntil;
  await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,campaigns:[],offerContext:brief}));
  await run(env,"INSERT OR IGNORE INTO integration_state(key,value) VALUES('inbox_cursor',?)",JSON.stringify({after:Math.floor(Date.parse(p.created_at)/1000)-120,before:0,page:''}));
  return env;

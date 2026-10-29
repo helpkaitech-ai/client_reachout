@@ -6,7 +6,7 @@ export { WorkspaceBackup } from './workspace-backup';
 import {backupStatus,forwardBackupImport,savedWorkspace,refreshBackup,isD1Unavailable} from './workspace-backup';
 import {backupTables} from './workspace-schema';
 import { approvalHash, approvalProblems, cleanEmail, publicUrl, validTimezone, validateSettings } from './policy';
-import { importLead, startDiscovery, searchHistory } from './discovery';
+import { importLead, startDiscovery, searchHistory, discoveryPause } from './discovery';
 import { notifyDigest, reconcile, signature, suppress, composedBody, unsubscribeUrl, sendApproved, syncInbox } from './mail';
 import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
@@ -79,6 +79,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  }
  if(path==='/api/discover'||path==='/api/discovery/sync'){
   if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
+  const resumeAt=discoveryPause(s);if(resumeAt)return {state:'paused',resumeAt,message:`New prospect searches are paused until ${resumeAt}. Existing business research continues.`};
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
   const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') LIMIT 1");
   if(active)return {state:active.state,runId:active.id,message:'Your prospect search is already running or queued. Results appear automatically.'};
