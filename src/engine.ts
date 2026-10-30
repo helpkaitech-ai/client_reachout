@@ -1,4 +1,4 @@
-import type {Env,Job,Lead} from './types';
+import type {Env,Job,Lead,Settings} from './types';
 import {acquire,all,audit,BudgetPaused,claimResearchBusiness,day,enqueue,now,one,release,run,settings} from './db';
 import {startDiscovery,runDiscovery,discoveryPause} from './discovery';
 import {draftLead} from './research';
@@ -6,6 +6,7 @@ import {notifyDigest,sendApproved,syncInbox} from './mail';
 import {UncertainProviderError,ProviderError} from './providers';
 import {StageYield,type Workflow} from './ai';
 import {requireProductReady,productList,scopeProduct,advanceProductAnalysis} from './products';
+import {outreachPaused,OutreachPaused} from './outreach-control';
 
 export async function scheduleResearch(env:Env){
  const at=now(),prefix=env.PRODUCT_ID?'initial-product:'+env.PRODUCT_REVISION+':':'initial-ai:';
@@ -30,12 +31,14 @@ export async function recoverUnstartedResearch(env:Env){
  if(r.meta.changes)await audit(env,'unstarted_research_recovered',null,`${r.meta.changes} tasks had no provider history and returned to queue`);
 }
 export async function processJob(env:Env,job:Job){
+ if(await outreachPaused(env))return {paused:true};
  const claim=await run(env,"UPDATE jobs SET state='running',attempts=attempts+1,error=NULL,updated_at=? WHERE id=? AND state='pending'",now(),job.id);if(!claim.meta.changes)return;
  const payload=JSON.parse(job.payload),w:Workflow={jobId:job.id,paidCalls:0,retryVersion:payload.retryVersion||0,priority:['reply','followup'].includes(job.kind),maxCost:payload.maxCost};
  try{
   requireProductReady(env);
   const s=await settings(env);let result;
   if(job.kind==='discover_search'){
+   if(s.discoveryPaused){await run(env,"UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return {paused:true};}
    const resumeAt=discoveryPause(s);if(resumeAt){await run(env,"UPDATE jobs SET state='paused',error='New prospect searches temporarily paused; existing business research continues',next_run_at=?,updated_at=? WHERE id=? AND state='running'",resumeAt,now(),job.id);return;}
    result=await runDiscovery(env,s,job,w);
   }
@@ -50,6 +53,7 @@ export async function processJob(env:Env,job:Job){
   }else throw new Error('Retired or unsupported task type');
   await run(env,"UPDATE jobs SET state='complete',error=NULL,next_run_at=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return result;
  }catch(error){
+  if(error instanceof OutreachPaused){await run(env,"UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return {paused:true};}
   if(error instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=? AND state='running'",now(),job.id);return {state:'pending'};}
   const message=error instanceof Error?error.message:'Task failed';
   const budget=error instanceof BudgetPaused,providerQuota=error instanceof ProviderError&&error.status===429;
@@ -60,11 +64,13 @@ export async function processJob(env:Env,job:Job){
  }
 }
 export async function processDiscovery(env:Env){const job=await one<Job>(env,"SELECT * FROM jobs WHERE kind='discover_search' AND state='pending' ORDER BY created_at,id LIMIT 1");return job?processJob(env,job):undefined;}
-export async function processAvailableJobs(env:Env){
- if(!env.OPENAI_API_KEY)return;
+export async function processAvailableJobs(env:Env,currentSettings?:Settings){
+ if(!env.OPENAI_API_KEY||(!currentSettings&&await outreachPaused(env)))return;
+ const s=currentSettings||await settings(env);
+ if(s.outreachPaused)return;
  // One paid stage per cycle stays within Workers Free's 50 D1 query limit.
  // Bounded discovery imports also persist only three candidates per invocation.
- const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`);
+ const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') AND (kind<>'discover_search' OR ?=0) ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`,s.discoveryPaused?1:0);
  if(job)await processJob(env,job);
 }
 export async function tick(env:Env){
@@ -79,9 +85,10 @@ export async function tick(env:Env){
   await run(env,"UPDATE jobs SET state='pending',next_run_at=NULL WHERE state='paused' AND next_run_at<=?",now());
   const inboxWork={processed:0};
   let inboxOk=false;if(env.GOOGLE_REFRESH_TOKEN){try{inboxOk=await syncInbox(env,inboxWork);}catch{await audit(env,'inbox_sync_failed',null,'Sending paused this cycle because inbox synchronization failed');}}
+  if(s.outreachPaused)return {paused:true};
   if(env.ENABLE_AUTOMATION==='true'&&s.researchAutomation!==false){
    const backlog=await researchBacklog(env);
-   if(backlog<s.dailyNewLimit*3&&env.OPENAI_API_KEY)await startDiscovery(env,s);
+   if(!s.discoveryPaused&&backlog<s.dailyNewLimit*3&&env.OPENAI_API_KEY)await startDiscovery(env,s);
    // Legacy reconciliation is an explicit cutover operation, not a repeated
    // scan of every old expense on each cron invocation.
    await scheduleResearch(env);
@@ -92,9 +99,10 @@ export async function tick(env:Env){
   }
   const dispatchWork={processed:0};
   if(inboxOk)await sendApproved(env,s,undefined,dispatchWork);
-  if(s.researchAutomation!==false&&inboxWork.processed===0&&dispatchWork.processed===0)await processAvailableJobs(env);
+  if(s.researchAutomation!==false&&inboxWork.processed===0&&dispatchWork.processed===0)await processAvailableJobs(env,s);
   if(new Date().getUTCHours()>=3)await notifyDigest(env,s);
-  await run(env,'DELETE FROM sessions WHERE expires_at<?',now());await run(env,'DELETE FROM auth_attempts WHERE reset_at<?',now());
+  // Authentication now lives in AUTH_STORE; do not scan its retired D1 tables
+  // on every research cycle. AUTH_STORE handles active session expiration.
  }catch(error){await audit(env,'engine_error',null,error instanceof Error?error.message:'Engine failed');}
  finally{await release(env,'scheduler',owner);}
 }
@@ -103,7 +111,7 @@ export async function tickWorkspaces(env:Env){
  // Isolated leases and ledgers allow all approved products to progress fairly.
  const products=await productList(env);
  await Promise.all(products.filter(p=>p.enabled).map(async p=>{
-  try{if(p.state==='analyzing')await advanceProductAnalysis(env,p);else if(p.state==='approved'&&p.approved_revision===p.revision)await tick(await scopeProduct(env,p));}
+  try{if(p.state==='analyzing'&&!await outreachPaused(env))await advanceProductAnalysis(env,p);else if(p.state==='approved'&&p.approved_revision===p.revision)await tick(await scopeProduct(env,p));}
   catch(e){await audit(env,'product_cycle_failed',p.id,e instanceof Error?e.message:'Product cycle failed');}
  }));
 }

@@ -2,6 +2,12 @@
 
 Website: https://prepyr-outreach.prepyr-data.workers.dev
 
+## Outreach pause and discovery controls
+
+Outreach is paused indefinitely until the owner uses **Resume outreach** in the top bar. This blocks paid OpenAI work, discovery, product analysis, follow-up/reply drafting, external status messages and prospect sending, including previously approved queued emails. Existing records and approvals are retained. Passive inbox monitoring and in-app reply notifications remain available. The pause has no automatic expiry.
+
+Each prospect workspace has a separate **Resume discovery / Pause discovery** control. Resuming the overall program leaves currently paused discovery paused. Enable only the desired workspace's discovery; approved product targeting is still required. Automatic searches use a **six-day interval**, measured from the previous search start, and still respect the research backlog and spending limits. New products start with discovery paused. The previous three-day schedule and timed hold are superseded. Pausing discovery alone allows existing business research and approved outreach to continue; pausing outreach stops those too. Settings forms cannot override the dedicated pause controls.
+
 OpenAI discovers independent small and midsize businesses worldwide, researches their public contacts and actual workflows, and prepares a business-specific working-pilot proposal for owner review. Cloudflare hosts the app and D1 database; Gmail handles sending and inbox synchronization.
 
 ## Product workspaces
@@ -41,7 +47,7 @@ The configured limits are 20 distinct businesses researched per UTC day and 12 t
 
 ## Spending and durable work
 
-Automatic prospect discovery runs at most once every **three days per workspace**, measured from the last search start, and waits while another search is active or the research backlog is full. A timed discovery hold blocks both manual and automatic searches (including queued discovery stages) until its displayed end time. Existing prospect research continues on the minute scheduler during this hold. The global hold also applies to product workspaces. `node scripts/apply-discovery-schedule.mjs` applies the requested one-time 72-hour hold and three-day interval to Existing outreach; rerunning it preserves the originally recorded end time in the private artifact. New product workspaces default to three days between searches.
+Automatic discovery runs at most once every **six days per workspace** while both the overall program and that workspace discovery are enabled. It also waits for active searches, the backlog and spending limits. Use the pause/resume controls above; the former timed three-day hold and its one-time command are retired.
 
 Each product workspace has its own **$50 maximum OpenAI allowance per UTC calendar month**, shared across that product's discovery, extraction, product/screenshot analysis, contact research, business research, solution design, drafts, follow-ups and replies. Existing outreach retains its own historical ledger and allowance. Acquisition stages use up to 90% of it, keeping the remaining headroom for existing conversations. A conservative reservation is made before each request and reconciled with usage afterward. The provider invoice remains authoritative; Relay cannot see unrelated applications spending on the same key.
 

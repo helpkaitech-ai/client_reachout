@@ -10,13 +10,13 @@ import {processAvailableJobs,scheduleResearch,tick} from '../src/engine';
 import {saveProduct,scopeProduct} from '../src/products';
 import worker from '../src/index';
 
-test('automatic discovery waits three days, while manual searches remain available after the explicit hold expires',async()=>{
+test('automatic discovery waits six days, while manual searches remain available after the explicit hold expires',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='test';
  try{
-  assert.equal(defaults.discoveryIntervalDays,3);
-  await startDiscovery(env,testSettings);await run(env,"UPDATE discovery_batches SET state='complete',created_at=?",new Date(Date.now()-2*86400000).toISOString());
+  assert.equal(defaults.discoveryIntervalDays,6);
+  await startDiscovery(env,testSettings);await run(env,"UPDATE discovery_batches SET state='complete',created_at=?",new Date(Date.now()-5*86400000).toISOString());
   assert.equal((await startDiscovery(env,testSettings)).state,'cooldown');
-  await run(env,"UPDATE discovery_batches SET created_at=?",new Date(Date.now()-3*86400000-1000).toISOString());
+  await run(env,"UPDATE discovery_batches SET created_at=?",new Date(Date.now()-6*86400000-1000).toISOString());
   assert.equal((await startDiscovery(env,testSettings)).state,'queued');
   await run(env,"UPDATE discovery_batches SET state='complete'");
   assert.equal((await startDiscovery(env,{...testSettings,discoveryPausedUntil:new Date(Date.now()-1000).toISOString()},testSettings.campaigns[0],'manual')).state,'queued');
@@ -50,11 +50,11 @@ test('queued discovery defers until the hold ends and existing research continue
  }finally{globalThis.fetch=original;close();}
 });
 
-test('new product workspaces inherit the global hold and the three-day default without sharing research limits or budget',async()=>{
+test('new product workspaces inherit the global hold and the six-day default without sharing research limits or budget',async()=>{
  const {env,close}=database();try{
   const pausedUntil=new Date(Date.now()+3*86400000).toISOString();await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,discoveryPausedUntil:pausedUntil}));
   const p=await saveProduct(env,{name:'Product',website:'https://pumps.example.com',description:'Quote management product',sender_email:'data@prepyr.com'}),scoped=await scopeProduct(env,p),s=await settings(scoped);
-  assert.equal(s.discoveryPausedUntil,pausedUntil);assert.equal(s.discoveryIntervalDays,3);assert.equal(s.dailyResearchLimit,20);assert.equal(s.openaiBudget,50);
+  assert.equal(s.discoveryPausedUntil,pausedUntil);assert.equal(s.discoveryIntervalDays,6);assert.equal(s.dailyResearchLimit,20);assert.equal(s.openaiBudget,50);
   assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:'tomorrow'}),/Invalid discovery pause date/);
   assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:42} as any),/Invalid discovery pause date/);
  }finally{close();}

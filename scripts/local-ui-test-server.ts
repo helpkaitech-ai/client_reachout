@@ -9,7 +9,7 @@ import {notifyInApp} from '../src/notifications';
 import {ingestMessage} from '../src/mail';
 const {env,close}=database();env.APP_URL='http://127.0.0.1:8789';env.OPENAI_API_KEY='fixture-only';env.ENABLE_AUTOMATION='false';env.ENABLE_SENDING='false';
 globalThis.fetch=mockOpenAI().fetcher;
-await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));
+await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:process.argv.includes('--paused'),discoveryPaused:process.argv.includes('--paused')}));
 const lead=await readyLead(env);const draft=await readyDraft(env,lead);
 await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL WHERE id=?",draft.id);
 await run(env,"UPDATE leads SET contact_status='publicly_sourced',contact_evidence=?,status='review' WHERE id=?",JSON.stringify({sourceUrl:'https://pumps.example.com/contact',excerpt:contactExcerpt,status:'publicly_sourced'}),lead.id);

@@ -16,6 +16,7 @@ import {locationOptions, validateLocations, manualSearchPlan} from './locations'
 import { gmail, jsonRequest } from './providers';
 import { prospectPage, prospectDetail } from './prospects';
 import {notificationPage,readNotifications} from './notifications';
+import {assertOutreachRunning,controlOutreach} from './outreach-control';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -29,7 +30,7 @@ function connections(env:Env,s:Settings) {
   gmail:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_REFRESH_TOKEN),
   telegram:!!(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_CHAT_ID),
   notificationEmail:env.NOTIFY_EMAIL||'',sender:env.SENDER_EMAIL||'',
-  automationEnabled:env.ENABLE_AUTOMATION==='true',sendingEnabled:env.ENABLE_SENDING==='true',notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true',
+  automationEnabled:env.ENABLE_AUTOMATION==='true'&&!s.outreachPaused,sendingEnabled:env.ENABLE_SENDING==='true'&&!s.outreachPaused,notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true'&&!s.outreachPaused,
   postalAddress:!!s.businessAddress,providerPolicyConfirmed:s.providerPolicyConfirmed,
   researchModel:env.OPENAI_RESEARCH_MODEL||'gpt-5.4-mini',draftModel:env.OPENAI_DRAFT_MODEL||'gpt-5.6-sol'
  };
@@ -65,10 +66,18 @@ async function dashboard(env:Env,compact=false) {
 }
 async function mutate(request:Request,env:Env,path:string,input:any) {
  const s=await settings(env);
+ if(path==='/api/discovery/control'){
+  if(typeof input.paused!=='boolean')throw new Error('Choose whether discovery is paused');
+  if(!input.paused){await assertOutreachRunning(env);requireProductReady(env);}
+  await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify(s));
+  await run(env,"UPDATE settings SET data=json_set(data,'$.discoveryPaused',json(?),'$.discoveryIntervalDays',6,'$.discoveryPausedUntil','') WHERE id=1",JSON.stringify(input.paused));
+  await audit(env,input.paused?'discovery_paused':'discovery_resumed',null,'Owner changed discovery; automatic interval is six days');return {ok:true,message:input.paused?'Discovery paused until you resume it.':'Discovery resumed. Automatic searches run at six-day intervals.'};
+ }
+ if(['/api/discover','/api/discovery/sync','/api/notify'].includes(path)||/\/(research|rewrite|approve|retry)$/.test(path))await assertOutreachRunning(env);
  if(env.PRODUCT_ID&&(/^\/api\/(discover|import)$/.test(path)||/\/(research|rewrite|approve)$/.test(path)))requireProductReady(env);
  if(['/api/settings','/api/settings/sender','/api/settings/locations','/api/settings/preferences'].includes(path)) {
   const candidate=path.endsWith('/sender')?{...s,senderName:String(input.senderName||'').trim(),businessAddress:String(input.businessAddress||'').trim()}:path.endsWith('/locations')?{...s,locationIds:validateLocations(input.locationIds)}:path.endsWith('/preferences')?{...input,senderName:s.senderName,businessAddress:s.businessAddress,locationIds:s.locationIds,campaigns:s.campaigns}:input;
-  const next=validateSettings(candidate);await run(env,'INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',JSON.stringify(next));
+  const next=validateSettings({...candidate,outreachPaused:s.outreachPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil,discoveryIntervalDays:6});await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''),'$.discoveryIntervalDays',6)`,JSON.stringify(next));
   if(next.senderName!==s.senderName||next.businessAddress!==s.businessAddress)await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL WHERE status='approved'");
   await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next)};
  }
@@ -79,6 +88,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
   await audit(env,'leads_imported',null,`${added} added; ${duplicates} duplicates; ${errors.length} invalid`);return {added,duplicates,errors};
  }
  if(path==='/api/discover'||path==='/api/discovery/sync'){
+  if(s.discoveryPaused)return {state:'paused',message:'Discovery is paused. Resume discovery in this prospect workspace.'};
   if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
   const resumeAt=discoveryPause(s);if(resumeAt)return {state:'paused',resumeAt,message:`New prospect searches are paused until ${resumeAt}. Existing business research continues.`};
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
@@ -216,6 +226,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
  if(path==='/api/logout'&&request.method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
  if(path==='/api/notifications'&&request.method==='GET')return json(await notificationPage(env));
  if(path==='/api/notifications/read'&&request.method==='POST'){try{return json(await readNotifications(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Notification update failed'},400);}}
+ if(path==='/api/outreach/control'&&request.method==='POST'){try{return json(await controlOutreach(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Program control failed'},400);}}
  if(path==='/api/products'&&request.method==='GET')return json({products:await productList(env)});
  if(path==='/api/products'&&request.method==='POST'){try{return json({product:await saveProduct(env,await body(request,2400000))});}catch(e){return json({error:e instanceof Error?e.message:'Product could not be saved'},400);}}
  const productRoute=path.match(/^\/api\/products\/([a-zA-Z0-9-]+)(?:\/(analyze|approve|run|sender|pause|archive))?$/);
@@ -225,6 +236,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   if(request.method!=='POST')return json({error:'Not found'},404);
   try{
    const input=await body(request,2400000);
+   if(['analyze','run','approve'].includes(action||''))await assertOutreachRunning(env);
    if(!action)return json({product:await saveProduct(env,input,id)});
    if(action==='analyze')return json(await queueProductAnalysis(env,id,input.confirmPaidRetry===true));
    if(action==='approve'){if(input.profileReviewed!==true)throw new Error('Review the proposed customer profile before approval');return json(await approveProduct(env,id,Number(input.revision)));}

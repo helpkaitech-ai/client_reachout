@@ -4,6 +4,7 @@ import { approvalHash, approvalProblems, classifyInbound, cleanEmail, withinWind
 import { gmail, googleAccessToken, mimeMessage, sendGmail, telegram, ProviderError } from './providers';
 import {requireProductReady,assertProductCurrent} from './products';
 import {notifyInApp} from './notifications';
+import {outreachPaused} from './outreach-control';
 
 export async function signature(env:Env,text:string) {
  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(env.SESSION_SECRET||''),{name:'HMAC',hash:'SHA-256'},false,['sign']);
@@ -25,6 +26,8 @@ export async function suppress(env:Env,lead:Lead,reason:string) {
  await audit(env,'suppressed',lead.id,reason);
 }
 export async function sendApproved(env:Env,s:Settings,draftId?:string,work?:{processed:number}) {
+ if(env.ENABLE_SENDING!=='true'){requireProductReady(env);await assertProductCurrent(env);return;}
+ if(await outreachPaused(env))return;
  const owner=await acquire(env,'dispatch',180);if(!owner)return;
  try{return await dispatchApproved(env,s,draftId,work);}finally{await release(env,'dispatch',owner);}
 }
@@ -62,6 +65,7 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  const claimed=await run(env,`UPDATE drafts SET status='sending',message_id=?,updated_at=? WHERE id=? AND status='approved' AND version=?
  AND NOT EXISTS(SELECT 1 FROM suppressions WHERE email=?) AND EXISTS(SELECT 1 FROM leads WHERE id=? AND status NOT IN ('suppressed','closed','bounced'))`,messageId,now(),draft.id,draft.version,lead.email,lead.id);
  if(!claimed.meta.changes)return;
+ if(await outreachPaused(env)){await run(env,"UPDATE drafts SET status='approved' WHERE id=? AND status='sending'",draft.id);return;}
  try {
   const result=await sendGmail(env,raw,lead.thread_id);
   if(!result.id)throw new Error('Send response did not contain a message ID');
@@ -157,7 +161,7 @@ export async function reconcile(env:Env,s:Settings,id:string) {
  await recordSent(env,s,d,lead,m.id,m.threadId,d.message_id);
 }
 export async function notifyDigest(env:Env,s:Settings,force=false) {
- if(env.ENABLE_NOTIFICATIONS!=='true')return;
+ if(env.ENABLE_NOTIFICATIONS!=='true'||await outreachPaused(env))return;
  const pending=await one<{n:number}>(env,"SELECT COUNT(*) n FROM drafts WHERE status='pending'");
  const failed=await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')");
  const content=`Relay: ${env.PRODUCT_NAME||'Existing outreach'}\n${pending?.n||0} drafts awaiting your review.\n${failed?.n||0} jobs need attention.\nDaily new email cap: ${s.dailyNewLimit}.\nReview research and approve: ${env.APP_URL}${env.PRODUCT_ID?'/?product='+encodeURIComponent(env.PRODUCT_ID):''}\nNothing is sent without approval.`;

@@ -1,7 +1,7 @@
 import {offerContext} from './offers';
 export interface Env {
  DB: D1Database; ASSETS: Fetcher; AUTH_STORE: DurableObjectNamespace; WORKSPACE_BACKUP?: DurableObjectNamespace;
- PRODUCT_WORKSPACES?: DurableObjectNamespace; GLOBAL_DB?:D1Database; PRODUCT_ID?:string; PRODUCT_NAME?:string; PRODUCT_BRIEF?:string; PRODUCT_APPROVED?:boolean; PRODUCT_REVISION?:number; DISCOVERY_PAUSED_UNTIL?:string;
+ PRODUCT_WORKSPACES?: DurableObjectNamespace; GLOBAL_DB?:D1Database; PRODUCT_ID?:string; PRODUCT_NAME?:string; PRODUCT_BRIEF?:string; PRODUCT_APPROVED?:boolean; PRODUCT_REVISION?:number; DISCOVERY_PAUSED_UNTIL?:string; OUTREACH_PAUSED?:boolean;
  APP_URL?: string; ADMIN_PASSWORD?: string; SESSION_SECRET?: string;
  OPENAI_API_KEY?: string; OPENAI_RESEARCH_MODEL?: string; OPENAI_DRAFT_MODEL?: string;
  GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
@@ -16,7 +16,7 @@ export interface Settings {
  dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number;
  openaiBudget: number;
  discoveryResults: number; discoveryIntervalDays: number; discoveryPausedUntil?:string;
- researchAutomation?: boolean;
+ researchAutomation?: boolean; outreachPaused?:boolean; discoveryPaused?:boolean;
  sendStartHour: number; sendEndHour: number; sendWeekends: boolean;
  followupDays: number[]; senderName: string; businessAddress: string;
  offerContext: string; portfolio: string; providerPolicyConfirmed: boolean;
@@ -45,7 +45,7 @@ export interface Job { id:string; kind:string; lead_id:string|null; payload:stri
 export const defaults: Settings = {
  locationIds:['worldwide'],
  dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,
- openaiBudget:50, discoveryResults:10, discoveryIntervalDays:3, discoveryPausedUntil:'', researchAutomation:true,
+ openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:true, outreachPaused:false, discoveryPaused:false,
  sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,

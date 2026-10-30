@@ -15,6 +15,7 @@ export async function settings(env:Env):Promise<Settings> {
  const stored=row?JSON.parse(row.data):{};
  const active=Object.fromEntries(Object.keys(defaults).filter(k=>k in stored).map(k=>[k,stored[k]]));
  const result={...defaults,...active,openaiBudget:Math.min(50,Number(active.openaiBudget)||50),discoveryResults:Math.min(10,Number(active.discoveryResults)||10)};
+ if(env.PRODUCT_ID)result.outreachPaused=env.OUTREACH_PAUSED===true;
  if(env.PRODUCT_ID){result.dailyResearchLimit=Math.min(20,result.dailyResearchLimit);result.dailyTotalLimit=Math.min(12,result.dailyTotalLimit);result.dailyNewLimit=Math.min(12,result.dailyNewLimit);result.offerContext=env.PRODUCT_BRIEF||result.offerContext;if(!env.PRODUCT_APPROVED)result.researchAutomation=false;if(Date.parse(env.DISCOVERY_PAUSED_UNTIL||'')>Date.parse(result.discoveryPausedUntil||'1970-01-01T00:00:00Z'))result.discoveryPausedUntil=env.DISCOVERY_PAUSED_UNTIL;}
  return result;
 }

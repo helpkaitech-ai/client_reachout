@@ -63,6 +63,7 @@ export function validateSettings(input:unknown):Settings {
  if(/[\r\n<>]/.test(s.senderName)) throw new Error('Invalid sender name');
  if(typeof s.providerPolicyConfirmed!=='boolean'||typeof s.sendWeekends!=='boolean') throw new Error('Invalid settings switches');
  if(s.researchAutomation!==undefined&&typeof s.researchAutomation!=='boolean')throw new Error('Invalid research automation setting');
+ for(const key of ['outreachPaused','discoveryPaused'] as const)if(s[key]!==undefined&&typeof s[key]!=='boolean')throw new Error('Invalid pause setting');
  if(s.discoveryPausedUntil!==undefined&&(typeof s.discoveryPausedUntil!=='string'||(s.discoveryPausedUntil!==''&&(!Number.isFinite(Date.parse(s.discoveryPausedUntil))||new Date(s.discoveryPausedUntil).toISOString()!==s.discoveryPausedUntil))))throw new Error('Invalid discovery pause date');
  if(!Array.isArray(s.campaigns)||s.campaigns.length>30) throw new Error('Use up to 30 campaigns');
  for(const c of s.campaigns) if(!c||typeof c.query!=='string'||typeof c.location!=='string'||!c.query.trim()||!c.location.trim()||c.query.length>150||c.location.length>150||!/^[A-Z]{2}$/.test(c.country)||!validTimezone(c.timezone)||typeof c.enabled!=='boolean') throw new Error('Invalid campaign');

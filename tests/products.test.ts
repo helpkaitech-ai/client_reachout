@@ -16,7 +16,7 @@ const input={name:'FlangeFlow',website:'https://pumps.example.com',description:'
 async function approved(env:any,name=input.name){
  const p=await saveProduct(env,{...input,name});await queueProductAnalysis(env,p.id);
  for(let i=0;i<5;i++){const fresh=await product(env,p.id);if(fresh.state!=='analyzing')break;await advanceProductAnalysis(env,fresh);}
- const review=await product(env,p.id);assert.equal(review.state,'target_review');await approveProduct(env,p.id,review.revision);return product(env,p.id);
+ const review=await product(env,p.id);assert.equal(review.state,'target_review');await approveProduct(env,p.id,review.revision);await run(await scopeProduct(env,await product(env,p.id)),"UPDATE settings SET data=json_set(data,'$.discoveryPaused',json('false'))");return product(env,p.id);
 }
 async function req(env:any,path:string,body?:any,cookie?:string){return worker.fetch(new Request('https://outreach.example.com'+path,{method:body===undefined?'GET':'POST',headers:{Origin:'https://outreach.example.com','X-Requested-With':'Prepyr',...(cookie?{Cookie:cookie}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),env,{waitUntil:()=>{}} as unknown as ExecutionContext);}
 async function login(env:any){const r=await req(env,'/api/login',{password:env.ADMIN_PASSWORD});return r.headers.get('set-cookie')!.split(';')[0];}
