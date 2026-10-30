@@ -50,11 +50,11 @@ test('queued discovery defers until the hold ends and existing research continue
  }finally{globalThis.fetch=original;close();}
 });
 
-test('new product workspaces inherit the global hold and the six-day default without sharing research limits or budget',async()=>{
+test('new product workspaces start paused independently of the Existing outreach hold and retain dedicated limits',async()=>{
  const {env,close}=database();try{
   const pausedUntil=new Date(Date.now()+3*86400000).toISOString();await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,discoveryPausedUntil:pausedUntil}));
   const p=await saveProduct(env,{name:'Product',website:'https://pumps.example.com',description:'Quote management product',sender_email:'data@prepyr.com'}),scoped=await scopeProduct(env,p),s=await settings(scoped);
-  assert.equal(s.discoveryPausedUntil,pausedUntil);assert.equal(s.discoveryIntervalDays,6);assert.equal(s.dailyResearchLimit,20);assert.equal(s.openaiBudget,50);
+  assert.equal(s.discoveryPausedUntil,'');assert.equal(s.prospectingPaused,true);assert.equal(s.discoveryIntervalDays,6);assert.equal(s.dailyResearchLimit,20);assert.equal(s.openaiBudget,50);
   assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:'tomorrow'}),/Invalid discovery pause date/);
   assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:42} as any),/Invalid discovery pause date/);
  }finally{close();}

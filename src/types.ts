@@ -8,15 +8,16 @@ export interface Env {
  TELEGRAM_BOT_TOKEN?: string; TELEGRAM_CHAT_ID?: string;
  SENDER_EMAIL?: string; NOTIFY_EMAIL?: string;
  ENABLE_AUTOMATION?: string; ENABLE_SENDING?: string; ENABLE_NOTIFICATIONS?: string;
+ AI_STAGES_PER_CYCLE?:string;
 }
-export interface Product {id:string;name:string;website:string;description:string;remarks:string;sender_email:string;revision:number;state:string;analysis:string;approved_revision:number|null;error:string|null;enabled:number;created_at:string;updated_at:string;}
+export interface Product {id:string;name:string;website:string;description:string;remarks:string;sender_email:string;revision:number;state:string;analysis:string;approved_revision:number|null;error:string|null;enabled:number;created_at:string;updated_at:string;prospecting_paused?:boolean;}
 export interface Campaign { query: string; location: string; country: string; timezone: string; enabled: boolean }
 export interface Settings {
  locationIds?: string[];
  dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number;
  openaiBudget: number;
  discoveryResults: number; discoveryIntervalDays: number; discoveryPausedUntil?:string;
- researchAutomation?: boolean; outreachPaused?:boolean; discoveryPaused?:boolean;
+ researchAutomation?: boolean; outreachPaused?:boolean; discoveryPaused?:boolean; prospectingPaused?:boolean;
  sendStartHour: number; sendEndHour: number; sendWeekends: boolean;
  followupDays: number[]; senderName: string; businessAddress: string;
  offerContext: string; portfolio: string; providerPolicyConfirmed: boolean;
@@ -45,7 +46,7 @@ export interface Job { id:string; kind:string; lead_id:string|null; payload:stri
 export const defaults: Settings = {
  locationIds:['worldwide'],
  dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,
- openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:true, outreachPaused:false, discoveryPaused:false,
+ openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:true, outreachPaused:false, discoveryPaused:false, prospectingPaused:false,
  sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,

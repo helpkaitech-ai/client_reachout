@@ -3,7 +3,7 @@ import { all, one, settings } from './db';
 import { approvalProblems } from './policy';
 
 const records=`WITH rows AS (
- SELECT l.*,d.id draft_id,d.status draft_status,d.kind draft_kind,d.subject draft_subject,d.send_after,(SELECT classification FROM messages WHERE lead_id=l.id AND direction='inbound' ORDER BY created_at DESC,id DESC LIMIT 1) inbound_classification,
+ SELECT l.*,d.id draft_id,d.status draft_status,d.kind draft_kind,d.subject draft_subject,d.send_after,j.state research_job_state,j.error research_job_error,j.updated_at research_job_updated_at,(SELECT classification FROM messages WHERE lead_id=l.id AND direction='inbound' ORDER BY created_at DESC,id DESC LIMIT 1) inbound_classification,
  CASE
  WHEN l.status IN ('suppressed','closed','bounced') THEN 'stopped'
  WHEN d.status='uncertain' THEN 'check_sent'
@@ -19,6 +19,7 @@ const records=`WITH rows AS (
  ELSE 'preparing' END email_status
  FROM leads l LEFT JOIN drafts d ON d.id=(SELECT id FROM drafts WHERE lead_id=l.id
  ORDER BY CASE WHEN status IN ('pending','approved','sending','uncertain','failed') THEN 0 WHEN status='sent' THEN 1 ELSE 2 END,created_at DESC,id DESC LIMIT 1)
+ LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE lead_id=l.id AND kind IN ('research','rewrite','followup','reply') ORDER BY created_at DESC,id DESC LIMIT 1)
 )`;
 const groups:Record<string,string>={
  all:'1=1',pending:"email_status='pending'",attention:"email_status IN ('attention','failed','check_sent')",

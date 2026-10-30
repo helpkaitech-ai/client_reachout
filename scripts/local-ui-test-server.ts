@@ -7,9 +7,14 @@ import {run} from '../src/db';
 import {mockOpenAI,contactExcerpt} from '../tests/openai-fixture';
 import {notifyInApp} from '../src/notifications';
 import {ingestMessage} from '../src/mail';
+import {saveProduct} from '../src/products';
 const {env,close}=database();env.APP_URL='http://127.0.0.1:8789';env.OPENAI_API_KEY='fixture-only';env.ENABLE_AUTOMATION='false';env.ENABLE_SENDING='false';
 globalThis.fetch=mockOpenAI().fetcher;
-await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:process.argv.includes('--paused'),discoveryPaused:process.argv.includes('--paused')}));
+await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:process.argv.includes('--paused'),prospectingPaused:process.argv.includes('--workspace-controls'),discoveryPaused:process.argv.includes('--paused')||process.argv.includes('--workspace-controls')}));
+if(process.argv.includes('--workspace-controls')){
+ for(const name of ['FlangeFlow','VenuePilot'])await saveProduct(env,{name,website:'https://pumps.example.com',description:'Isolated product fixture for checking independent prospect controls',sender_email:'data@prepyr.com'});
+ await run(env,"UPDATE products SET state='approved',approved_revision=revision");
+}
 const lead=await readyLead(env);const draft=await readyDraft(env,lead);
 await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL WHERE id=?",draft.id);
 await run(env,"UPDATE leads SET contact_status='publicly_sourced',contact_evidence=?,status='review' WHERE id=?",JSON.stringify({sourceUrl:'https://pumps.example.com/contact',excerpt:contactExcerpt,status:'publicly_sourced'}),lead.id);

@@ -6,17 +6,21 @@ import {cleanEmail,publicUrl,validTimezone} from './policy';
 import {openai,outputText,UncertainProviderError} from './providers';
 import {StageYield} from './ai';
 import {objectSchema,textField as str,researchSecurity,collectSources,listedSource} from './evidence';
+import {controlProspecting,assertOutreachRunning,OutreachPaused} from './outreach-control';
+import {providerBlock,OpenAICreditBlocked,assertProviderAvailable} from './provider-control';
 
 export async function product(env:Env,id:string){const p=await one<Product>(env,'SELECT * FROM products WHERE id=?',id);if(!p)throw new Error('Product not found');return p;}
-export async function productList(env:Env){return all<Product>(env,"SELECT * FROM products WHERE state<>'archived' ORDER BY created_at,id");}
+export async function productList(env:Env){
+ const products=await all<Product>(env,"SELECT * FROM products WHERE state<>'archived' ORDER BY created_at,id");
+ return Promise.all(products.map(async p=>{const row=await one<{paused:number}>({...env,DB:productDatabase(env,p.id)},"SELECT json_extract(data,'$.prospectingPaused') paused FROM settings WHERE id=1");return {...p,prospecting_paused:row?.paused!==0};}));
+}
 export async function scopeProduct(root:Env,p:Product):Promise<Env>{
  const db=productDatabase(root,p.id),approved=p.state==='approved'&&p.approved_revision===p.revision&&p.enabled===1;
  const brief=JSON.stringify({name:p.name,website:p.website,description:p.description,remarks:p.remarks,approvedCustomerProfile:JSON.parse(p.analysis||'{}')});
  const env={...root,DB:db,GLOBAL_DB:root.GLOBAL_DB||root.DB,PRODUCT_ID:p.id,PRODUCT_NAME:p.name,PRODUCT_BRIEF:brief,PRODUCT_APPROVED:approved,PRODUCT_REVISION:p.revision,SENDER_EMAIL:p.sender_email,WORKSPACE_BACKUP:undefined};
  const base=await settings(root);
- env.DISCOVERY_PAUSED_UNTIL=base.discoveryPausedUntil;
  env.OUTREACH_PAUSED=base.outreachPaused===true;
- await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,discoveryPaused:true,campaigns:[],offerContext:brief}));
+ await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,prospectingPaused:true,discoveryPaused:true,campaigns:[],offerContext:brief}));
  await run(env,"INSERT OR IGNORE INTO integration_state(key,value) VALUES('inbox_cursor',?)",JSON.stringify({after:Math.floor(Date.parse(p.created_at)/1000)-120,before:0,page:''}));
  return env;
 }
@@ -47,11 +51,17 @@ export async function saveProduct(env:Env,input:any,id?:string){
   if(!changed.meta.changes)throw new Error('Product changed; reload before saving');
  }else await run(env,'INSERT INTO products(id,name,website,description,remarks,sender_email,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',key,name,website,description,remarks,sender,at,at);
  const p=await product(env,key),scoped=await scopeProduct(env,p);
- const ops=[scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; approve the new target profile and review or improve this draft',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
+ const ops=[scoped.DB.prepare("UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('true'),'$.discoveryPaused',json('true')) WHERE id=1"),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; approve the new target profile and review or improve this draft',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
  if(images){ops.push(scoped.DB.prepare('DELETE FROM product_assets'));for(const image of images)ops.push(scoped.DB.prepare('INSERT INTO product_assets VALUES(?,?,?)').bind(image.id,image.name,image.data));}
  await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; target approval required');return p;
 }
-export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p);return {product:p,images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
+export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,prospecting_paused:s.prospectingPaused===true},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
+export async function controlProductProspecting(env:Env,id:string,paused:boolean){
+ if(typeof paused!=='boolean')throw new Error('Choose whether prospecting is paused');
+ const p=await product(env,id);
+ if(!paused){await assertOutreachRunning(env);if(!p.enabled||p.state!=='approved'||p.approved_revision!==p.revision)throw new Error('Approve the current target profile before resuming prospects');}
+ return controlProspecting(await scopeProduct(env,p),paused);
+}
 async function searchDiagnostics(env:Env){
  const batches=await all<any>(env,'SELECT * FROM discovery_batches ORDER BY created_at DESC LIMIT 3'),result=[];
  for(const batch of batches){
@@ -66,6 +76,7 @@ async function searchDiagnostics(env:Env){
  return result;
 }
 export async function queueProductAnalysis(env:Env,id:string,confirmRetry=false){
+ await assertProviderAvailable(env);
  const p=await product(env,id),scope=await scopeProduct(env,p),jobId=`product-profile:${p.id}:${p.revision}`;
  const prior=await one<any>(scope,'SELECT * FROM jobs WHERE id=?',jobId);
  if(prior?.state==='uncertain')throw new Error('The previous request has an unknown outcome. Reconcile its provider charge before retrying');
@@ -96,7 +107,8 @@ export async function advanceProductAnalysis(root:Env,p:Product){
  }catch(e){
   const error=e instanceof Error?e.message:'Product research failed';
   if(e instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=?",now(),jobId);return;}
-  const state=e instanceof BudgetPaused?'paused':e instanceof UncertainProviderError?'uncertain':'failed';
+  if(e instanceof OutreachPaused){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=?",now(),jobId);return;}
+  const state=e instanceof BudgetPaused?'paused':e instanceof OpenAICreditBlocked||/credit_balance_exhausted|insufficient_quota|billing_hard_limit_reached/.test(error)?'paused_provider':e instanceof UncertainProviderError?'uncertain':'failed';
   await run(env,'UPDATE jobs SET state=?,error=?,updated_at=? WHERE id=?',state,error,now(),jobId);
   await run(root,"UPDATE products SET state=?,error=?,updated_at=? WHERE id=? AND revision=?",state==='paused'?'analyzing':state,error,now(),p.id,p.revision);
  }

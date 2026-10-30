@@ -7,7 +7,8 @@ import {collectSources,listedSource,objectSchema,textField as str,researchSecuri
 import {entityKey,importLead} from './leads';
 import {publicUrl} from './policy';
 import {requireProductReady} from './products';
-import {assertOutreachRunning} from './outreach-control';
+import {assertProspectingRunning} from './outreach-control';
+import {assertProviderAvailable} from './provider-control';
 export {importLead} from './leads';
 export function discoveryPause(s:Settings){return Date.parse(s.discoveryPausedUntil||'')>Date.now()?s.discoveryPausedUntil:null;}
 
@@ -15,7 +16,6 @@ const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:o
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
 export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string){
- await assertOutreachRunning(env);
  requireProductReady(env);
  if(s.discoveryPaused)return {state:'paused',message:'Discovery is paused. Resume discovery in this prospect workspace.'};
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
@@ -24,6 +24,8 @@ export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,inten
  if(active&&!intent)return {state:active.state,runId:active.id,message:'Your prospect search is already queued or running. Results appear automatically.'};
  const last=await one<any>(env,'SELECT created_at FROM discovery_batches ORDER BY created_at DESC LIMIT 1');
  if(!selected&&last&&Date.now()-Date.parse(last.created_at)<s.discoveryIntervalDays*86400000)return {state:'cooldown',message:'The next search starts after the configured interval.'};
+ await assertProspectingRunning(env);
+ await assertProviderAvailable(env);
  const history=await searchHistory(env),choices=s.campaigns.filter(c=>c.enabled);
  const base=selected||(env.PRODUCT_ID?choices[history.reduce((n,h)=>n+Number(h.uses),0)%choices.length]:nextCampaign(s,history));
  if(!base)throw new Error('The approved customer profile has no enabled search campaigns');

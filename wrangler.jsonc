@@ -9,5 +9,5 @@
   "migrations": [{"tag":"auth-v1","new_sqlite_classes":["RelayAuthStore"]},{"tag":"workspace-backup-v1","new_sqlite_classes":["WorkspaceBackup"]},{"tag":"products-v1","new_sqlite_classes":["ProductWorkspace"]}],
   "triggers": {"crons":["* * * * *"]},
   "observability": {"enabled":true},
-  "vars": {"APP_NAME":"Relay"}
+  "vars": {"APP_NAME":"Relay","AI_STAGES_PER_CYCLE":"3"}
 }

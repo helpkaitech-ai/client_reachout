@@ -11,12 +11,13 @@ import { notifyDigest, reconcile, signature, suppress, composedBody, unsubscribe
 import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
 export {ProductWorkspace} from './product-store';
-import {product,productList,productDetail,saveProduct,scopeProduct,queueProductAnalysis,approveProduct,advanceProductAnalysis,requireProductReady} from './products';
+import {product,productList,productDetail,saveProduct,scopeProduct,queueProductAnalysis,approveProduct,advanceProductAnalysis,requireProductReady,controlProductProspecting} from './products';
 import {locationOptions, validateLocations, manualSearchPlan} from './locations';
 import { gmail, jsonRequest } from './providers';
 import { prospectPage, prospectDetail } from './prospects';
 import {notificationPage,readNotifications} from './notifications';
-import {assertOutreachRunning,controlOutreach} from './outreach-control';
+import {assertOutreachRunning,assertProspectingRunning,controlOutreach,controlProspecting} from './outreach-control';
+import {providerBlock,clearProviderBlock,assertProviderAvailable} from './provider-control';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -30,12 +31,12 @@ function connections(env:Env,s:Settings) {
   gmail:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_REFRESH_TOKEN),
   telegram:!!(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_CHAT_ID),
   notificationEmail:env.NOTIFY_EMAIL||'',sender:env.SENDER_EMAIL||'',
-  automationEnabled:env.ENABLE_AUTOMATION==='true'&&!s.outreachPaused,sendingEnabled:env.ENABLE_SENDING==='true'&&!s.outreachPaused,notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true'&&!s.outreachPaused,
+  automationEnabled:env.ENABLE_AUTOMATION==='true'&&!s.outreachPaused&&!s.prospectingPaused,sendingEnabled:env.ENABLE_SENDING==='true'&&!s.outreachPaused&&!s.prospectingPaused,notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true'&&!s.outreachPaused&&!s.prospectingPaused,
   postalAddress:!!s.businessAddress,providerPolicyConfirmed:s.providerPolicyConfirmed,
   researchModel:env.OPENAI_RESEARCH_MODEL||'gpt-5.4-mini',draftModel:env.OPENAI_DRAFT_MODEL||'gpt-5.6-sol'
  };
 }
-async function dashboard(env:Env,compact=false) {
+async function dashboard(env:Env,compact=false,saved=false) {
  const s=await settings(env);
  const [stats,usage,budgets,drafts,leads,messages,jobs,events,runs,notifications,expenses]=await Promise.all([
   all(env,'SELECT status,COUNT(*) count FROM leads GROUP BY status'),
@@ -61,23 +62,21 @@ async function dashboard(env:Env,compact=false) {
  (SELECT COUNT(*) FROM jobs WHERE state IN ('pending','running') AND kind IN ('research','rewrite')) researching,
  (SELECT COUNT(*) FROM drafts WHERE kind='initial' AND quality_hold='' AND created_at>=?) draftedToday`,day()+'T00:00:00.000Z',day()+'T00:00:00.000Z');
  const enrichedDrafts=(drafts as any[]).map(d=>{const l=(leads as Lead[]).find(l=>l.id===d.lead_id);return {...d,sendIssues:l?approvalProblems(d,{...l,eligibility:l.eligibility==='ineligible'?'ineligible':'eligible',eligibility_note:'Confirmed at approval',verification:l.verification==='invalid'?'invalid':'owner_reviewed'},s):['Prospect record not in current view']};});
- const pipeline={provider:'openai',pausedJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('paused','paused_provider')"))?.n||0,waitingResearch:await researchBacklog(env),attentionJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')"))?.n||0};
+ const pipeline={provider:'openai',providerBlock:saved?null:await providerBlock(env),pausedJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('paused','paused_provider')"))?.n||0,waitingResearch:await researchBacklog(env),attentionJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')"))?.n||0};
  return {settings:s,locationOptions,connections:connections(env,s),metrics,stats,usage,budgets,pipeline,drafts:enrichedDrafts,leads,messages,jobs,events,runs,notifications,expenses,date:day()};
 }
 async function mutate(request:Request,env:Env,path:string,input:any) {
  const s=await settings(env);
  if(path==='/api/discovery/control'){
-  if(typeof input.paused!=='boolean')throw new Error('Choose whether discovery is paused');
+  if(typeof input.paused!=='boolean')throw new Error('Choose whether prospecting is paused');
   if(!input.paused){await assertOutreachRunning(env);requireProductReady(env);}
-  await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify(s));
-  await run(env,"UPDATE settings SET data=json_set(data,'$.discoveryPaused',json(?),'$.discoveryIntervalDays',6,'$.discoveryPausedUntil','') WHERE id=1",JSON.stringify(input.paused));
-  await audit(env,input.paused?'discovery_paused':'discovery_resumed',null,'Owner changed discovery; automatic interval is six days');return {ok:true,message:input.paused?'Discovery paused until you resume it.':'Discovery resumed. Automatic searches run at six-day intervals.'};
+  return controlProspecting(env,input.paused);
  }
- if(['/api/discover','/api/discovery/sync','/api/notify'].includes(path)||/\/(research|rewrite|approve|retry)$/.test(path))await assertOutreachRunning(env);
+ if(['/api/discover','/api/discovery/sync','/api/notify'].includes(path)||/\/(research|rewrite|approve|retry)$/.test(path))await assertProspectingRunning(env);
  if(env.PRODUCT_ID&&(/^\/api\/(discover|import)$/.test(path)||/\/(research|rewrite|approve)$/.test(path)))requireProductReady(env);
  if(['/api/settings','/api/settings/sender','/api/settings/locations','/api/settings/preferences'].includes(path)) {
   const candidate=path.endsWith('/sender')?{...s,senderName:String(input.senderName||'').trim(),businessAddress:String(input.businessAddress||'').trim()}:path.endsWith('/locations')?{...s,locationIds:validateLocations(input.locationIds)}:path.endsWith('/preferences')?{...input,senderName:s.senderName,businessAddress:s.businessAddress,locationIds:s.locationIds,campaigns:s.campaigns}:input;
-  const next=validateSettings({...candidate,outreachPaused:s.outreachPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil,discoveryIntervalDays:6});await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''),'$.discoveryIntervalDays',6)`,JSON.stringify(next));
+  const next=validateSettings({...candidate,outreachPaused:s.outreachPaused,prospectingPaused:s.prospectingPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil,discoveryIntervalDays:6});await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.prospectingPaused',json(CASE WHEN json_extract(settings.data,'$.prospectingPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''),'$.discoveryIntervalDays',6)`,JSON.stringify(next));
   if(next.senderName!==s.senderName||next.businessAddress!==s.businessAddress)await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL WHERE status='approved'");
   await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next)};
  }
@@ -180,6 +179,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  }
  const jobMatch=path.match(/^\/api\/jobs\/([^/]+)\/retry$/);
  if(jobMatch){
+  await assertProviderAvailable(env);
   const job=await one<any>(env,'SELECT * FROM jobs WHERE id=?',jobMatch[1]);if(!job||!['failed','paused_provider'].includes(job.state))throw new Error('Only failed jobs can be deliberately retried. Uncertain work requires provider reconciliation.');
   if(input.confirmPaidRetry!==true)throw new Error('Confirm this retry may incur a new provider charge');
   const payload=JSON.parse(job.payload);payload.retryVersion=(payload.retryVersion||0)+1;await run(env,"UPDATE jobs SET state='pending',payload=?,error=NULL,next_run_at=NULL,updated_at=? WHERE id=?",JSON.stringify(payload),now(),job.id);return {ok:true};
@@ -190,7 +190,7 @@ function isWorkspaceRead(path:string){return ['/api/dashboard','/api/prospects',
 async function readWorkspace(request:Request,env:Env,saved=false):Promise<Response>{
  const url=new URL(request.url),path=url.pathname;
  if(path==='/api/export'&&saved){const tables:Record<string,unknown[]>={};for(const table of backupTables)tables[table]=await all(env,'SELECT * FROM '+table);return json({scope:'Saved workspace views',...tables},200,{'Content-Disposition':'attachment; filename="relay-saved-workspace.json"'});}
- if(path==='/api/dashboard'&&request.method==='GET')return json(await dashboard(env,url.searchParams.get('summary')==='1'));
+ if(path==='/api/dashboard'&&request.method==='GET')return json(await dashboard(env,url.searchParams.get('summary')==='1',saved));
  if(path==='/api/prospects'&&request.method==='GET')return json(await prospectPage(env,url));
  const detail=path.match(/^\/api\/prospects\/([^/]+)$/);
  if(detail&&request.method==='GET'){if(!await one(env,'SELECT id FROM leads WHERE id=?',detail[1]))return json({error:'Prospect not found'},404);return json(await prospectDetail(env,detail[1]));}
@@ -227,9 +227,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
  if(path==='/api/notifications'&&request.method==='GET')return json(await notificationPage(env));
  if(path==='/api/notifications/read'&&request.method==='POST'){try{return json(await readNotifications(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Notification update failed'},400);}}
  if(path==='/api/outreach/control'&&request.method==='POST'){try{return json(await controlOutreach(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Program control failed'},400);}}
+ if(path==='/api/openai/control'&&request.method==='POST'){try{return json(await clearProviderBlock(env,await body(request)));}catch(e){return json({error:e instanceof Error?e.message:'Billing confirmation failed'},400);}}
  if(path==='/api/products'&&request.method==='GET')return json({products:await productList(env)});
  if(path==='/api/products'&&request.method==='POST'){try{return json({product:await saveProduct(env,await body(request,2400000))});}catch(e){return json({error:e instanceof Error?e.message:'Product could not be saved'},400);}}
- const productRoute=path.match(/^\/api\/products\/([a-zA-Z0-9-]+)(?:\/(analyze|approve|run|sender|pause|archive))?$/);
+ const productRoute=path.match(/^\/api\/products\/([a-zA-Z0-9-]+)(?:\/(analyze|approve|run|sender|pause|archive|prospecting))?$/);
  if(productRoute){
   const [,id,action]=productRoute;
   if(request.method==='GET'&&!action)return json(await productDetail(env,id));
@@ -242,6 +243,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
    if(action==='approve'){if(input.profileReviewed!==true)throw new Error('Review the proposed customer profile before approval');return json(await approveProduct(env,id,Number(input.revision)));}
    if(action==='run'){const p=await product(env,id);if(p.state!=='analyzing')throw new Error('No product research is queued');await advanceProductAnalysis(env,p);return json(await productDetail(env,id));}
    if(action==='sender'){const p=await product(env,id),data=await gmail(env,'settings/sendAs');return json({sender:p.sender_email,accepted:!!data.sendAs?.some((s:any)=>s.sendAsEmail.toLowerCase()===p.sender_email.toLowerCase()&&s.verificationStatus==='accepted'),message:'Product sender must be an accepted send-as identity in the connected Gmail mailbox'});}
+   if(action==='prospecting')return json(await controlProductProspecting(env,id,input.paused));
    if(action==='pause'){if(typeof input.enabled!=='boolean')throw new Error('Choose whether this product is enabled');await run(env,'UPDATE products SET enabled=?,updated_at=? WHERE id=?',input.enabled?1:0,now(),id);return json({ok:true});}
    if(action==='archive'){if(input.confirm!==true)throw new Error('Confirm product archival; its history is retained');await run(env,"UPDATE products SET enabled=0,state='archived',updated_at=? WHERE id=?",now(),id);return json({ok:true});}
   }catch(e){return json({error:e instanceof Error?e.message:'Product action failed'},400);}
