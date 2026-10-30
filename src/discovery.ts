@@ -1,6 +1,6 @@
 import type {Env,Settings,Campaign,Job} from './types';
 import {all,now,one,run,uid,audit} from './db';
-import {nextCampaign,type SearchHistory} from './locations';
+import {nextCampaign,nextProductCampaign,type SearchHistory} from './locations';
 import {openai,outputText} from './providers';
 import {StageYield,type Workflow} from './ai';
 import {collectSources,listedSource,objectSchema,textField as str,researchSecurity,containsExcerpt} from './evidence';
@@ -13,7 +13,7 @@ export {importLead} from './leads';
 export function discoveryPause(s:Settings){return Date.parse(s.discoveryPausedUntil||'')>Date.now()?s.discoveryPausedUntil:null;}
 
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
-const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
+const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,contact_name:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},contactScope:{type:'string',enum:['organization','public_professional','private_consumer']},sensitivePersonalTarget:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
 export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string){
  requireProductReady(env);
@@ -27,7 +27,7 @@ export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,inten
  await assertProspectingRunning(env);
  await assertProviderAvailable(env);
  const history=await searchHistory(env),choices=s.campaigns.filter(c=>c.enabled);
- const base=selected||(env.PRODUCT_ID?choices[history.reduce((n,h)=>n+Number(h.uses),0)%choices.length]:nextCampaign(s,history));
+ const base=selected||(env.PRODUCT_ID?nextProductCampaign(s,history):nextCampaign(s,history));
  if(!base)throw new Error('The approved customer profile has no enabled search campaigns');
  const searchAngle=['local specialist businesses with an official service catalogue','independent trade association members with an official business website','owner-operated service companies with a concrete booking or quotation workflow'][history.reduce((n,h)=>n+h.uses,0)%3];
  const campaign={...base,searchAngle:env.PRODUCT_ID?'Follow the owner-approved product targeting and remarks':searchAngle},id=intent||uid(),jobId='discovery:'+id,at=now();
@@ -48,7 +48,7 @@ export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
  const extractionSchema=JSON.parse(JSON.stringify(env.PRODUCT_ID?productCandidates:candidateSchema));
  extractionSchema.properties.candidates.items.properties.country={type:'string',enum:[campaign.country]};
  extractionSchema.properties.candidates.items.properties.evidenceExcerpt={type:'string',description:'An exact continuous substring of the supplied report, copied without paraphrasing, preferably 20-200 characters',minLength:20,maxLength:500};
- const extracted=await openai(env,s,JSON.stringify({report:outputText(report),sources,campaign}),`${researchSecurity} Extract only supported businesses from the report. Return an empty candidates array for insufficient evidence. Include exact excerpts supporting identity and target fit, the official website, and an exact consulted sourceUrl. country must be the ISO code ${campaign.country}; exclude businesses outside this country instead of relabeling them. ${env.PRODUCT_ID?'Set targetMatch using the approved product profile and all owner remarks; explain fitEvidence for this exact product.':''} Never fill missing facts from memory.`,batch.id+':extract',{schema:extractionSchema,workflow:w,stage:'discover_extract',maxOutput:3500});
+ const extracted=await openai(env,s,JSON.stringify({report:outputText(report),sources,campaign}),`${researchSecurity} Extract only supported businesses from the report. Return an empty candidates array for insufficient evidence. Include exact excerpts supporting identity and target fit, the official website, and an exact consulted sourceUrl. country must be the ISO code ${campaign.country}; exclude businesses outside this country instead of relabeling them. ${env.PRODUCT_ID?'Set targetMatch using the approved product profile and ALL configured customer types, descriptions, targeting comments and offer preferences. Label contactScope as organization, public_professional or private_consumer. sensitivePersonalTarget must be true if the match depends on individual health, addiction, financial vulnerability or other sensitive personal trait; exclude such prospects and all private consumers. Individuals must be acting in a public professional capacity, with their professional name in contact_name and their public portfolio/site in website. Do not infer private interests or conditions. Explain fitEvidence for this exact product.':''} Never fill missing facts from memory.`,batch.id+':extract',{schema:extractionSchema,workflow:w,stage:'discover_extract',maxOutput:3500});
  let parsed=JSON.parse(outputText(extracted));if(!Array.isArray(parsed.candidates))throw new Error('Invalid discovery schema');
  if(parsed.candidates.length&&!parsed.candidates.some((c:any)=>listedSource(c.sourceUrl,sources)&&containsExcerpt(outputText(report),c.evidenceExcerpt)&&c.country===campaign.country)){
   const repair=await openai(env,s,JSON.stringify({report:outputText(report),sources,campaign,previousExtraction:parsed}),`${researchSecurity} Repair ONLY the candidate evidence extraction using the SAVED report. No new search and no new business facts. For evidenceExcerpt copy a short continuous substring (20-200 characters) EXACTLY from the supplied report, preserving words, punctuation and spelling. Do not paraphrase or merge separate sentences. Use the ISO country code ${campaign.country}. Choose only consulted source URLs supporting that business. Exclude a candidate if you cannot locate a literal supporting excerpt. Retain the approved product matching criteria and owner remarks.`,batch.id+':evidence-repair',{schema:extractionSchema,workflow:w,stage:'discover_evidence_repair',maxOutput:3500});
@@ -60,7 +60,7 @@ export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
   const key=entityKey(String(c.company||''),String(c.website||''),String(c.city||''));
   if(prior.has(key))continue;
   if(processed>=3){remaining=true;break;}processed++;
-  const fit=(env.PRODUCT_ID?c.targetMatch===true:c.independence==='independent'&&c.size==='small_or_midsize')&&String(c.fitEvidence||'').length>=20&&String(c.evidenceExcerpt||'').length>=20;
+  const fit=(env.PRODUCT_ID?c.targetMatch===true&&c.sensitivePersonalTarget===false&&['organization','public_professional'].includes(c.contactScope):c.independence==='independent'&&c.size==='small_or_midsize')&&String(c.fitEvidence||'').length>=20&&String(c.evidenceExcerpt||'').length>=20;
   const supported=!!publicUrl(c.website)&&listedSource(c.sourceUrl,sources)&&containsExcerpt(outputText(report),c.evidenceExcerpt)&&String(c.country||'').toUpperCase()===campaign.country&&!!String(c.company||'').trim()&&!!String(c.city||'').trim();
   let outcome='needs_review',leadId:string|null=null;
   if(fit&&supported){leadId=await importLead(env,{...c,source_url:c.sourceUrl,email:null},campaign);outcome=leadId?'imported':'duplicate';}

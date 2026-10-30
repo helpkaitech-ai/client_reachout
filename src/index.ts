@@ -12,12 +12,13 @@ import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
 export {ProductWorkspace} from './product-store';
 import {product,productList,productDetail,saveProduct,scopeProduct,queueProductAnalysis,approveProduct,advanceProductAnalysis,requireProductReady,controlProductProspecting} from './products';
-import {locationOptions, validateLocations, manualSearchPlan} from './locations';
+import {locationOptions, validateLocations, manualSearchPlan,nextProductCampaign} from './locations';
 import { gmail, jsonRequest } from './providers';
 import { prospectPage, prospectDetail } from './prospects';
 import {notificationPage,readNotifications} from './notifications';
 import {assertOutreachRunning,assertProspectingRunning,controlOutreach,controlProspecting} from './outreach-control';
 import {providerBlock,clearProviderBlock,assertProviderAvailable} from './provider-control';
+import {prepareWorkspaceSettings} from './workspace-settings';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -75,10 +76,10 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  if(['/api/discover','/api/discovery/sync','/api/notify'].includes(path)||/\/(research|rewrite|approve|retry)$/.test(path))await assertProspectingRunning(env);
  if(env.PRODUCT_ID&&(/^\/api\/(discover|import)$/.test(path)||/\/(research|rewrite|approve)$/.test(path)))requireProductReady(env);
  if(['/api/settings','/api/settings/sender','/api/settings/locations','/api/settings/preferences'].includes(path)) {
-  const candidate=path.endsWith('/sender')?{...s,senderName:String(input.senderName||'').trim(),businessAddress:String(input.businessAddress||'').trim()}:path.endsWith('/locations')?{...s,locationIds:validateLocations(input.locationIds)}:path.endsWith('/preferences')?{...input,senderName:s.senderName,businessAddress:s.businessAddress,locationIds:s.locationIds,campaigns:s.campaigns}:input;
-  const next=validateSettings({...candidate,outreachPaused:s.outreachPaused,prospectingPaused:s.prospectingPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil,discoveryIntervalDays:6});await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.prospectingPaused',json(CASE WHEN json_extract(settings.data,'$.prospectingPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''),'$.discoveryIntervalDays',6)`,JSON.stringify(next));
+  const candidate=path.endsWith('/sender')?{...s,senderName:String(input.senderName||'').trim(),businessAddress:String(input.businessAddress||'').trim()}:path.endsWith('/locations')?{...s,locationIds:validateLocations(input.locationIds)}:path.endsWith('/preferences')?{...s,...input,senderName:s.senderName,businessAddress:s.businessAddress,locationIds:s.locationIds,campaigns:s.campaigns}:{...s,...input};
+  const validated=validateSettings({...candidate,outreachPaused:s.outreachPaused,prospectingPaused:s.prospectingPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil});const prepared=await prepareWorkspaceSettings(env,s,validated,path.endsWith('/sender')?input.senderEmail:undefined),next=prepared.settings;await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.prospectingPaused',json(CASE WHEN json_extract(settings.data,'$.prospectingPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''))`,JSON.stringify(next));
   if(next.senderName!==s.senderName||next.businessAddress!==s.businessAddress)await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL WHERE status='approved'");
-  await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next)};
+  await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next),profileChanged:prepared.profileChanged,message:prepared.profileChanged?'Saved for this product. Prospecting is paused; analyze and approve the updated customer profile before resuming.':'Workspace settings saved'};
  }
  if(path==='/api/import') {
   const records=Array.isArray(input)?input:input.leads;if(!Array.isArray(records)||records.length>100)throw new Error('Import 1–100 lead records at a time');
@@ -93,7 +94,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
   const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') LIMIT 1");
   if(active)return {state:active.state,runId:active.id,message:'Your prospect search is already running or queued. Results appear automatically.'};
-  if(env.PRODUCT_ID){const history=await searchHistory(env),choices=s.campaigns.filter(c=>c.enabled),selected=choices[history.reduce((n,h)=>n+Number(h.uses),0)%choices.length];if(!selected)throw new Error('Approve a customer profile with enabled search scopes first');return startDiscovery(env,s,selected,crypto.randomUUID());}
+  if(env.PRODUCT_ID)return startDiscovery(env,s,nextProductCampaign(s,await searchHistory(env)),crypto.randomUUID());
   const plan=env.PRODUCT_ID?s.campaigns.filter(c=>c.enabled):manualSearchPlan(s,await searchHistory(env));const batch=crypto.randomUUID();let first;
   for(const [index,campaign] of plan.entries()){const result=await startDiscovery(env,s,campaign,batch+':'+index);if(!first)first=result;}
   return {...first,locations:plan.map(c=>c.location),message:plan.length>1?`Queued ${plan.length} location searches. Public business research continues automatically.`:first?.message};

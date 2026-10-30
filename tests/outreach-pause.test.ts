@@ -31,7 +31,7 @@ test('paused manual endpoints cannot spend or approve emails; settings cannot si
   await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true,discoveryPaused:true}));const lead=await readyLead(env),draft=await readyDraft(env,lead);await run(env,"UPDATE drafts SET status='pending' WHERE id=?",draft.id);const cookie=await login(env);
   for(const path of ['/api/discover',`/api/leads/${lead.id}/research`,`/api/drafts/${draft.id}/approve`,`/api/drafts/${draft.id}/rewrite`])assert.equal((await req(env,path,{version:1,evidenceReviewed:true,contactReviewed:true},cookie)).status,400);
   assert.equal((await req(env,'/api/discovery/control',{paused:false},cookie)).status,400);
-  assert.equal((await req(env,'/api/settings/preferences',{...testSettings,outreachPaused:false,discoveryPaused:false,discoveryIntervalDays:1},cookie)).status,200);const s=await settings(env);assert.equal(s.outreachPaused,true);assert.equal(s.discoveryPaused,true);assert.equal(s.discoveryIntervalDays,6);
+  assert.equal((await req(env,'/api/settings/preferences',{...testSettings,outreachPaused:false,discoveryPaused:false,discoveryIntervalDays:1},cookie)).status,200);const s=await settings(env);assert.equal(s.outreachPaused,true);assert.equal(s.discoveryPaused,true);assert.equal(s.discoveryIntervalDays,1);
   assert.equal((await req(env,'/api/notifications',undefined,cookie)).status,200);assert.equal(calls,0);assert.equal((await one<any>(env,'SELECT status FROM drafts WHERE id=?',draft.id)).status,'pending');
  }finally{globalThis.fetch=original;close();}
 });

@@ -63,3 +63,16 @@ export function manualSearchPlan(s:Settings,history:SearchHistory[]):Campaign[]{
  for(const scope of validateLocations(s.locationIds||['worldwide'])){const c=nextCampaign(s,simulated,[scope]);if(chosen.some(x=>x.location===c.location))continue;chosen.push(c);simulated.push({location:c.location,country:c.country,uses:1,last_used:new Date().toISOString()});}
  return chosen;
 }
+export function nextProductCampaign(s:Settings,history:SearchHistory[]):Campaign{
+ const choices=s.campaigns.filter(c=>c.enabled);if(!choices.length)throw new Error('Approve a customer profile with enabled search scopes first');
+ const count=history.reduce((n,h)=>n+Number(h.uses),0),query=choices[count%choices.length].query;
+ const ids=validateLocations(s.locationIds||['worldwide']);
+ if(ids.includes('worldwide'))return choices[count%choices.length];
+ const places=expandLocations(ids).sort((a,b)=>{
+  const usage=(p:Place)=>history.filter(h=>h.location===p.label).reduce((n,h)=>n+Number(h.uses),0);
+  return usage(a)-usage(b);
+ });
+ const p=places[0];if(!p)throw new Error('Select a valid product search location');
+ // The query is always OpenAI-derived; owner locations only constrain geography.
+ return {query,location:p.label,country:p.country,timezone:p.timezone,enabled:true};
+}

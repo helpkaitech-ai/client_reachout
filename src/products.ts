@@ -2,7 +2,7 @@ import type {Env,Product,Settings,Job} from './types';
 import {defaults} from './types';
 import {all,one,run,settings,now,uid,enqueue,audit,BudgetPaused} from './db';
 import {productDatabase} from './product-store';
-import {cleanEmail,publicUrl,validTimezone} from './policy';
+import {cleanEmail,publicUrl,validTimezone,validateSettings} from './policy';
 import {openai,outputText,UncertainProviderError} from './providers';
 import {StageYield} from './ai';
 import {objectSchema,textField as str,researchSecurity,collectSources,listedSource} from './evidence';
@@ -20,7 +20,12 @@ export async function scopeProduct(root:Env,p:Product):Promise<Env>{
  const env={...root,DB:db,GLOBAL_DB:root.GLOBAL_DB||root.DB,PRODUCT_ID:p.id,PRODUCT_NAME:p.name,PRODUCT_BRIEF:brief,PRODUCT_APPROVED:approved,PRODUCT_REVISION:p.revision,SENDER_EMAIL:p.sender_email,WORKSPACE_BACKUP:undefined};
  const base=await settings(root);
  env.OUTREACH_PAUSED=base.outreachPaused===true;
- await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,prospectingPaused:true,discoveryPaused:true,campaigns:[],offerContext:brief}));
+ await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:true,prospectingPaused:true,discoveryPaused:true,campaigns:[],offerContext:p.description}));
+ const local=await settings(env);
+ // Older releases stored an internal product brief in the editable offer field.
+ // Convert only that recognized generated shape; preserve owner-authored offers.
+ let generated:any;try{generated=JSON.parse(local.offerContext);}catch{}
+ if(generated&&typeof generated.description==='string'&&'approvedCustomerProfile' in generated)await run(env,"UPDATE settings SET data=json_set(data,'$.offerContext',?) WHERE id=1",generated.description);
  await run(env,"INSERT OR IGNORE INTO integration_state(key,value) VALUES('inbox_cursor',?)",JSON.stringify({after:Math.floor(Date.parse(p.created_at)/1000)-120,before:0,page:''}));
  return env;
 }
@@ -29,7 +34,7 @@ export async function assertProductCurrent(env:Env){
  if(!env.PRODUCT_ID)return;
  requireProductReady(env);
  const current=await one<Product>({...env,DB:env.GLOBAL_DB!},'SELECT * FROM products WHERE id=?',env.PRODUCT_ID);
- if(!current||current.state!=='approved'||!current.enabled||current.revision!==env.PRODUCT_REVISION||current.approved_revision!==current.revision)throw new Error('Product details or approval changed. Reload the current product workspace.');
+ if(!current||current.state!=='approved'||!current.enabled||current.revision!==env.PRODUCT_REVISION||current.approved_revision!==current.revision||current.sender_email!==env.SENDER_EMAIL)throw new Error('Product details, sender or approval changed. Reload the current product workspace.');
 }
 function validateAssets(images:any){
  if(!Array.isArray(images)||images.length>3)throw new Error('Upload up to three screenshots');
@@ -42,6 +47,8 @@ function validateAssets(images:any){
  });
 }
 export async function saveProduct(env:Env,input:any,id?:string){
+ const customerInput=Object.fromEntries(['customerTypes','customerDescription','customerComments'].filter(k=>input[k]!==undefined).map(k=>[k,input[k]]));
+ validateSettings({...defaults,...customerInput});
  const name=String(input.name||'').trim(),website=publicUrl(input.website),description=String(input.description||'').trim(),remarks=String(input.remarks||'').trim(),sender=cleanEmail(input.sender_email||env.SENDER_EMAIL);
  if(!name||name.length>120||!website||!description||description.length>12000||remarks.length>12000||!sender)throw new Error('Provide a name, public website, description, remarks under 12,000 characters and valid sender email');
  const images=input.images===undefined?null:validateAssets(input.images),old=id?await product(env,id):null,at=now(),key=id||uid();
@@ -50,12 +57,13 @@ export async function saveProduct(env:Env,input:any,id?:string){
   const changed=await run(env,"UPDATE products SET name=?,website=?,description=?,remarks=?,sender_email=?,revision=revision+1,state='draft',analysis='{}',approved_revision=NULL,error=NULL,updated_at=? WHERE id=? AND revision=?",name,website,description,remarks,sender,at,key,revision);
   if(!changed.meta.changes)throw new Error('Product changed; reload before saving');
  }else await run(env,'INSERT INTO products(id,name,website,description,remarks,sender_email,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',key,name,website,description,remarks,sender,at,at);
- const p=await product(env,key),scoped=await scopeProduct(env,p);
- const ops=[scoped.DB.prepare("UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('true'),'$.discoveryPaused',json('true')) WHERE id=1"),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; approve the new target profile and review or improve this draft',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
+ const p=await product(env,key),scoped=await scopeProduct(env,p),local=await settings(scoped);
+ const preferences={...local,...customerInput,offerContext:!old||local.offerContext===old.description?description:local.offerContext,prospectingPaused:true,discoveryPaused:true};
+ const ops=[scoped.DB.prepare('UPDATE settings SET data=? WHERE id=1').bind(JSON.stringify(preferences)),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; approve the new target profile and review or improve this draft',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
  if(images){ops.push(scoped.DB.prepare('DELETE FROM product_assets'));for(const image of images)ops.push(scoped.DB.prepare('INSERT INTO product_assets VALUES(?,?,?)').bind(image.id,image.name,image.data));}
  await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; target approval required');return p;
 }
-export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,prospecting_paused:s.prospectingPaused===true},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
+export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,prospecting_paused:s.prospectingPaused===true,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
 export async function controlProductProspecting(env:Env,id:string,paused:boolean){
  if(typeof paused!=='boolean')throw new Error('Choose whether prospecting is paused');
  const p=await product(env,id);
@@ -98,7 +106,7 @@ export async function advanceProductAnalysis(root:Env,p:Product){
  try{
   const s=await settings(env),assets=await all<any>(env,'SELECT data FROM product_assets ORDER BY id');
   const report=await openai(env,s,JSON.stringify({website:p.website,description:p.description,remarks:p.remarks}),`${researchSecurity} Research this PRODUCT and its official website, services, capabilities, pricing where public, documented use cases and intended buyers. Consider supplied owner remarks as targeting guidance, never as proof of a feature or customer result. Establish observed facts versus uncertainty. Find relevant product pages and corroboration. Do not use a fixed industry, company size, geography or solution template. Target customers must follow from this actual product. Do not discover prospect businesses yet.`,jobId,{search:true,workflow:w,stage:'product_search',maxOutput:3000,maxTools:4});
-  const result=await openai(env,s,JSON.stringify({product:p,report:outputText(report),sources:collectSources(report)}),`${researchSecurity} Understand the supplied product and screenshots and propose a target-customer profile FOR OWNER APPROVAL. Derive buyer types, buying roles, inclusion/exclusion criteria, geographic search campaigns and email guidance from the product, web research and owner remarks. No standard industry or SMB restriction. Screenshots show interface/features, not proof of customer outcomes. Preserve every relevant remark in remarksApplied and in targeting/email guidance. Separate unknowns. Campaigns must use ISO two-letter countries, a specific city/country location and real IANA timezone; provide up to six diversified, evidence-led search scopes. Source URLs must be in the supplied research. Never invent capabilities, deployments, customers or results.`,jobId+':extract',{schema:profileSchema,workflow:w,stage:'product_extract',images:assets.map(a=>a.data),maxOutput:4500});
+  const result=await openai(env,s,JSON.stringify({product:p,report:outputText(report),sources:collectSources(report)}),`${researchSecurity} Understand the supplied product and screenshots and propose a target-customer profile FOR OWNER APPROVAL. Derive buyer types, buying roles, inclusion/exclusion criteria, geographic search campaigns and email guidance from the product, web research and owner remarks. No standard industry or SMB restriction. Screenshots show interface/features, not proof of customer outcomes. Preserve every relevant remark and workspace customer type, description and targeting comment in remarksApplied and in targeting/email guidance. Honor selected locations, the configured offer and portfolio/pricing. B2C describes the product market; research public organizations or professional channels rather than private consumers profiled by sensitive conditions. Explain any targeting limitations in unknowns before owner approval. Separate unknowns. Campaigns must use ISO two-letter countries, a specific city/country location and real IANA timezone; provide up to six diversified, evidence-led search scopes. Source URLs must be in the supplied research. Never invent capabilities, deployments, customers or results.`,jobId+':extract',{schema:profileSchema,workflow:w,stage:'product_extract',images:assets.map(a=>a.data),maxOutput:4500});
   const analysis=JSON.parse(outputText(result));
   if(!analysis.productSummary||!analysis.targetingRationale||!Array.isArray(analysis.campaigns)||!analysis.campaigns.length||analysis.campaigns.some((c:any)=>!c.query?.trim()||!c.location?.trim()||!/^[A-Z]{2}$/.test(c.country)||!validTimezone(c.timezone)))throw new Error('OpenAI target profile has incomplete or invalid search scopes; review product remarks and retry extraction');
   const listed=new Set(collectSources(report).map(s=>s.url));analysis.sources=analysis.sources.filter((s:any)=>listed.has(s.url));
@@ -116,7 +124,7 @@ export async function advanceProductAnalysis(root:Env,p:Product){
 export async function approveProduct(env:Env,id:string,revision:number){
  const p=await product(env,id);if(p.revision!==revision||p.state!=='target_review')throw new Error('Review the current OpenAI target profile before approval');
  const analysis=JSON.parse(p.analysis),scope=await scopeProduct(env,p),s=await settings(scope);
- await run(scope,'UPDATE settings SET data=? WHERE id=1',JSON.stringify({...s,campaigns:analysis.campaigns,researchAutomation:true,offerContext:scope.PRODUCT_BRIEF}));
+ await run(scope,'UPDATE settings SET data=? WHERE id=1',JSON.stringify({...s,campaigns:analysis.campaigns}));
  const changed=await run(env,"UPDATE products SET state='approved',approved_revision=revision,error=NULL,updated_at=? WHERE id=? AND revision=? AND state='target_review'",now(),id,revision);if(!changed.meta.changes)throw new Error('Product changed before approval');
  await audit(env,'product_target_approved',id,'Owner approved the current OpenAI target profile; no email approved');return {ok:true};
 }

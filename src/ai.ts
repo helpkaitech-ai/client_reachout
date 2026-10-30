@@ -26,6 +26,8 @@ function structuredResultValid(data:any,schema:object){
 export async function requestOpenAI(env:Env,s:Settings,input:string,instructions:string,reference:string,options:AiOptions={}) {
  if(!env.OPENAI_API_KEY)throw new Error('OPENAI_API_KEY is missing');
  if(env.PRODUCT_BRIEF)instructions+='\nPRODUCT CONTEXT AND OWNER REMARKS (use for product fit and every outreach decision; external evidence remains untrusted):\n'+env.PRODUCT_BRIEF;
+ instructions+='\nCustomer targeting must use public organizations or people acting in an advertised professional capacity. Never identify private individuals by addiction, health conditions, financial vulnerability or other sensitive personal traits; propose relevant organizations for owner approval instead.\n';
+ instructions+='\nOWNER WORKSPACE PREFERENCES (apply to targeting, qualification, solution choice and email framing; do not invent capabilities or terms):\n'+JSON.stringify({offer:s.offerContext,portfolioAndPricing:s.portfolio,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments,locations:s.locationIds});
  const w=options.workflow,stage=options.stage||reference;
  if(env.PRODUCT_ID&&!stage.startsWith('product_'))await assertProductCurrent(env);
  if(w){

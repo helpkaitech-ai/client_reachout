@@ -14,13 +14,14 @@ export interface Product {id:string;name:string;website:string;description:strin
 export interface Campaign { query: string; location: string; country: string; timezone: string; enabled: boolean }
 export interface Settings {
  locationIds?: string[];
- dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number;
+ dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number; dailyLeadLimit:number;
  openaiBudget: number;
  discoveryResults: number; discoveryIntervalDays: number; discoveryPausedUntil?:string;
  researchAutomation?: boolean; outreachPaused?:boolean; discoveryPaused?:boolean; prospectingPaused?:boolean;
  sendStartHour: number; sendEndHour: number; sendWeekends: boolean;
  followupDays: number[]; senderName: string; businessAddress: string;
  offerContext: string; portfolio: string; providerPolicyConfirmed: boolean;
+ customerTypes:string[]; customerDescription:string; customerComments:string;
  campaigns: Campaign[];
 }
 export interface Lead {
@@ -45,12 +46,12 @@ export interface Research { report: string; sources: {url:string; title:string}[
 export interface Job { id:string; kind:string; lead_id:string|null; payload:string; state:string; attempts:number }
 export const defaults: Settings = {
  locationIds:['worldwide'],
- dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,
+ dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,dailyLeadLimit:20,
  openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:true, outreachPaused:false, discoveryPaused:false, prospectingPaused:false,
  sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,
- portfolio:'', providerPolicyConfirmed:false,
+ portfolio:'', providerPolicyConfirmed:false,customerTypes:[],customerDescription:'',customerComments:'',
  campaigns:[
   {query:'industrial equipment suppliers',location:'Austin, Texas, USA',country:'US',timezone:'America/Chicago',enabled:true},
   {query:'commercial maintenance companies',location:'Manchester, UK',country:'GB',timezone:'Europe/London',enabled:true},
