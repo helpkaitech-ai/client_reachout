@@ -1,8 +1,9 @@
 import type { Env, Lead } from './types';
 import { all, one, settings } from './db';
 import { approvalProblems } from './policy';
+import {readyDraftSql} from './qualified-prospects';
 
-const records=`WITH rows AS (
+function records(env:Env){return `WITH rows AS (
  SELECT l.*,d.id draft_id,d.status draft_status,d.kind draft_kind,d.subject draft_subject,d.send_after,j.state research_job_state,j.error research_job_error,j.updated_at research_job_updated_at,(SELECT classification FROM messages WHERE lead_id=l.id AND direction='inbound' ORDER BY created_at DESC,id DESC LIMIT 1) inbound_classification,
  CASE
  WHEN l.status IN ('suppressed','closed','bounced') THEN 'stopped'
@@ -20,7 +21,8 @@ const records=`WITH rows AS (
  FROM leads l LEFT JOIN drafts d ON d.id=(SELECT id FROM drafts WHERE lead_id=l.id
  ORDER BY CASE WHEN status IN ('pending','approved','sending','uncertain','failed') THEN 0 WHEN status='sent' THEN 1 ELSE 2 END,created_at DESC,id DESC LIMIT 1)
  LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE lead_id=l.id AND kind IN ('research','rewrite','followup','reply') ORDER BY created_at DESC,id DESC LIMIT 1)
-)`;
+ WHERE ${readyDraftSql(!!env.PRODUCT_ID,'l','d',!!env.SAVED_WORKSPACE)}
+)`;}
 const groups:Record<string,string>={
  all:'1=1',pending:"email_status='pending'",attention:"email_status IN ('attention','failed','check_sent')",
  contacted:'last_sent_at IS NOT NULL',replied:"id IN (SELECT lead_id FROM messages WHERE direction='inbound' AND classification='reply')",
@@ -34,7 +36,8 @@ export async function prospectPage(env:Env,url:URL){
  const offset=Math.max(0,Math.floor(Number(url.searchParams.get('offset'))||0)),limit=50;
  const q=(url.searchParams.get('q')||'').slice(0,150).toLowerCase();
  const search="instr(lower(company||' '||coalesce(email,'')||' '||city||' '||country),?)>0";
- const counts=await one(env,`${records} SELECT ${Object.entries(groups).map(([key,where])=>`SUM(CASE WHEN ${where} THEN 1 ELSE 0 END) AS ${key==='all'?'total':key}`).join(',')},(SELECT COUNT(*) FROM drafts WHERE status='sent') sent FROM rows`);
+ const visible=records(env);
+ const counts=await one(env,`${visible} SELECT ${Object.entries(groups).map(([key,where])=>`COALESCE(SUM(CASE WHEN ${where} THEN 1 ELSE 0 END),0) AS ${key==='all'?'total':key}`).join(',')},(SELECT COUNT(*) FROM drafts WHERE status='sent') sent FROM rows`);
  if(group==='sent'){
   const from="FROM drafts d JOIN leads l ON l.id=d.lead_id WHERE d.status='sent' AND instr(lower(l.company||' '||coalesce(l.email,'')||' '||l.city||' '||l.country),?)>0";
   const result=await all(env,`SELECT l.*,d.id draft_id,d.subject draft_subject,d.kind draft_kind,d.updated_at sent_at,'sent' email_status ${from} ORDER BY d.updated_at DESC,d.id DESC LIMIT ? OFFSET ?`,q,limit,offset);
@@ -42,8 +45,8 @@ export async function prospectPage(env:Env,url:URL){
   return {rows:result,counts,total:total?.n||0,offset,hasMore:offset+result.length<(total?.n||0)};
  }
  const where=`${groups[group]} AND ${search}`;
- const result=await all(env,`${records} SELECT * FROM rows WHERE ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`,q,limit,offset);
- const total=await one<{n:number}>(env,`${records} SELECT COUNT(*) n FROM rows WHERE ${where}`,q);
+ const result=await all(env,`${visible} SELECT * FROM rows WHERE ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`,q,limit,offset);
+ const total=await one<{n:number}>(env,`${visible} SELECT COUNT(*) n FROM rows WHERE ${where}`,q);
  return {rows:result,counts,total:total?.n||0,offset,hasMore:offset+result.length<(total?.n||0)};
 }
 

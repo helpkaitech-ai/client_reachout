@@ -98,8 +98,8 @@ test('material-conflict intelligence replaces blanket contradiction blocking whi
  try{const lead=await readyLead(env);await enqueue(env,'research',lead.id,{},'evidence');const dossier=await designSolution(env,testSettings,lead,research,{jobId:'evidence',paidCalls:0});assert.equal(dossier.qualityHold,'');assert.equal(ai.calls.length,1);assert.match(solutionEvidence({...dossier,materialConflict:true,materialConflictReason:'Wrong business'},research).qualityHold,/Wrong business/);assert.match(solutionEvidence({...dossier,facts:dossier.facts.map((f:any)=>({...f,evidenceType:'snippet'}))},research).qualityHold,/opened pages/);assert.match(solutionEvidence({...dossier,facts:dossier.facts.map((f:any)=>({...f,excerpt:'Invented unsupported detail'}))},research).qualityHold,/opened pages/);}finally{globalThis.fetch=original;close();}
 });
 
-test('prospect records expose stopped job state and reason instead of only stale last stage',async()=>{
- const {env,close}=database();try{const lead=await readyLead(env,{email:null});await enqueue(env,'research',lead.id,{},'stopped');await run(env,"UPDATE leads SET research_stage='contact_search' WHERE id=?",lead.id);await run(env,"UPDATE jobs SET state='paused_provider',error='OpenAI returned HTTP 429 (credit_balance_exhausted)' WHERE id='stopped'");const result=await prospectPage(env,new URL('https://outreach.example.com/api/prospects'));const row:any=result.rows[0];assert.equal(row.research_job_state,'paused_provider');assert.match(row.research_job_error,/credit_balance_exhausted/);}finally{close();}
+test('stopped unfinished candidates stay out of prospects while recorded task errors remain available',async()=>{
+ const {env,close}=database();try{const lead=await readyLead(env,{email:null});await enqueue(env,'research',lead.id,{},'stopped');await run(env,"UPDATE leads SET research_stage='contact_search' WHERE id=?",lead.id);await run(env,"UPDATE jobs SET state='paused_provider',error='OpenAI returned HTTP 429 (credit_balance_exhausted)' WHERE id='stopped'");const result=await prospectPage(env,new URL('https://outreach.example.com/api/prospects'));assert.equal(result.total,0);const job=await one<any>(env,"SELECT * FROM jobs WHERE id='stopped'");assert.equal(job.state,'paused_provider');assert.match(job.error,/credit_balance_exhausted/);}finally{close();}
 });
 
 test('product resume and billing reset require same-origin authentication and settings cannot bypass workspace pause',async()=>{
@@ -119,8 +119,8 @@ test('actual UI saves a paused product and controls each product independently w
   const lead=await readyLead(env,{email:null});await enqueue(env,'research',lead.id,{},'blocked-ui');await run(env,"UPDATE leads SET research_stage='contact_search' WHERE id=?",lead.id);await run(env,"UPDATE jobs SET state='paused_provider',error='OpenAI returned HTTP 429 (credit_balance_exhausted)' WHERE id='blocked-ui'");
   const login=await worker.fetch(new Request(base+'/api/login',{method:'POST',headers:{Origin:base,'X-Requested-With':'Prepyr'},body:JSON.stringify({password:env.ADMIN_PASSWORD})}),env,ctx),cookie=login.headers.get('set-cookie')!.split(';')[0];
   (dom.window as any).fetch=(path:string,init:any)=>worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);
-  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-open]'));
-  assert.equal(doc.querySelector('#outreach-state')!.textContent,'Relay active');assert.match(doc.querySelector('#content')!.textContent!,/OpenAI credits exhausted/);
+  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-discovery-control]'));
+  assert.equal(doc.querySelector('#outreach-state')!.textContent,'Relay active');assert.equal(doc.querySelector('[data-open]'),null);assert.match(doc.querySelector('#content')!.textContent!,/1 tasks are paused/);
   await click('[data-view="products"]');await until(()=>!!doc.querySelector('[data-product-new]'));
   await click('[data-product-new]');await until(()=>!!doc.querySelector('#product-form'));
   for(const [key,value]of Object.entries({...input,name:'Saved through UI'}))(doc.querySelector('#product-form [name="'+key+'"]') as HTMLInputElement).value=value;

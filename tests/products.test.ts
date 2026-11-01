@@ -111,12 +111,12 @@ test('product APIs enforce authentication, scope record IDs and reject executabl
  }finally{close();}
 });
 
-test('product new-lead and researched-business allowances stop at twenty without consuming another product allowance',async()=>{
+test('private candidates do not consume qualified slots while actual research stops at twenty independently per product',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch;globalThis.fetch=mockOpenAI().fetcher;
  try{
   const a=await scopeProduct(env,await approved(env,'A')),b=await scopeProduct(env,await approved(env,'B'));
   for(let i=0;i<20;i++){const id=await importLead(a,{company:'Business '+i,email:`business${i}@example.org`});assert.ok(id);assert.equal(await claimResearchBusiness(a,id!,20),true);}
-  await assert.rejects(importLead(a,{company:'Twenty first',email:'twentyfirst@example.org'}),BudgetPaused);assert.equal(await claimResearchBusiness(a,'unclaimed',20),false);assert.ok(await importLead(b,{company:'Twenty first',email:'twentyfirst@example.org'}));assert.equal(await claimResearchBusiness(b,'new-business',20),true);
+  assert.ok(await importLead(a,{company:'Twenty first',email:'twentyfirst@example.org'}));assert.equal(await claimResearchBusiness(a,'unclaimed',20),false);assert.ok(await importLead(b,{company:'Twenty first',email:'twentyfirst@example.org'}));assert.equal(await claimResearchBusiness(b,'new-business',20),true);
  }finally{globalThis.fetch=original;close();}
 });
 

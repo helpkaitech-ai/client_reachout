@@ -83,7 +83,7 @@ export async function savedWorkspace(env:Env):Promise<{env:Env;info:BackupInfo}|
   async run(){throw new Error('Saved workspace is read only');}
  }
  const db={prepare:(sql:string)=>new Statement(sql),batch:()=>{throw new Error('Saved workspace is read only');}} as unknown as D1Database;
- return {env:{...env,DB:db},info};
+ return {env:{...env,DB:db,SAVED_WORKSPACE:true},info};
 }
 export async function refreshBackup(env:Env,force=false){
  if(!env.WORKSPACE_BACKUP)return {updated:false};

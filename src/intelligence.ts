@@ -43,9 +43,9 @@ async function saveContact(env:Env,lead:Lead,w:Workflow,parsed:any,text:string,s
  return record;
 }
 export async function reconcileResearchContact(env:Env,s:Settings,lead:Lead,research:Research,w:Workflow){
- if(lead.email)return;
+ if(lead.email&&lead.contact_status==='publicly_sourced')return;
  const fresh=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;
- if(fresh.email)return;
+ if(fresh.email&&fresh.contact_status==='publicly_sourced')return;
  const key=w.jobId+':contact-reconcile';if(await one(env,'SELECT job_id FROM pipeline_results WHERE job_id=?',key))return;
  const response=await openai(env,s,JSON.stringify({business:{company:lead.company,website:lead.website,city:lead.city,country:lead.country},report:research.report,sources:research.sources}),`${researchSecurity} Reconcile a missing public business email using this SAVED business report only. Do not search or guess. Confirm exact business and location, then extract an appropriate business email, its exact consulted URL and a short continuous verbatim excerpt containing the email. Treat formatting changes as formatting only; never merge separate quotations. Do not use directory operators' mailboxes for a listed business. Label opened-page versus snippet evidence. If identity, mailbox attribution or evidence is unsupported, return empty email and explain why. This never verifies mailbox delivery.`,lead.id+':contact-reconcile',{schema:contactSchema,workflow:w,stage:'contact_reconcile_extract',maxOutput:1600});
  const parsed=JSON.parse(outputText(response));

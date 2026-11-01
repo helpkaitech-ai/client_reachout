@@ -6,7 +6,7 @@ import worker from '../src/index';
 import {database,readyLead,readyDraft,testSettings} from './helpers';
 import {attachBackup,snapshot,seedBackup} from './backup-helper';
 import {backupStatus,importBackup,refreshBackup,savedWorkspace} from '../src/workspace-backup';
-import {run} from '../src/db';
+import {run,one} from '../src/db';
 const base='https://outreach.example.com',quota="D1_ERROR: Your account has exceeded D1's free tier daily row read limit.";
 const ctx={waitUntil:()=>{}} as unknown as ExecutionContext;
 async function request(env:any,path:string,cookie?:string,payload?:any,origin=base){return worker.fetch(new Request(base+path,{method:payload===undefined?'GET':'POST',headers:{Origin:origin,'X-Requested-With':'Prepyr',...(cookie?{Cookie:cookie}:{})},...(payload===undefined?{}:{body:JSON.stringify(payload)})}),env,ctx);}
@@ -16,7 +16,7 @@ async function fixture(){
  const d=database(),backup=attachBackup(d.env);await run(d.env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));
  const lead=await readyLead(d.env),draft=await readyDraft(d.env,lead);await run(d.env,"UPDATE drafts SET status='pending' WHERE id=?",draft.id);
  await run(d.env,"INSERT INTO messages(id,lead_id,direction,subject,body,classification,created_at) VALUES('reply',?,'inbound','Saved reply','The complete fetched reply body.','reply',?)",lead.id,new Date().toISOString());
- for(let i=0;i<60;i++)await run(d.env,'INSERT INTO leads(id,company,email,created_at,updated_at) VALUES(?,?,?,?,?)','page-'+i,'Saved company '+i,'team'+i+'@example.com',new Date().toISOString(),new Date().toISOString());
+ for(let i=0;i<60;i++){await run(d.env,'INSERT INTO leads(id,company,email,research_at,created_at,updated_at) VALUES(?,?,?,?,?,?)','page-'+i,'Saved company '+i,'team'+i+'@example.com',new Date().toISOString(),new Date().toISOString(),new Date().toISOString());await readyDraft(d.env,(await one<any>(d.env,'SELECT * FROM leads WHERE id=?','page-'+i))!);}
  const sentLead=await readyLead(d.env,{company:'Sent Business',website:'https://sent.example.com',email:'sent@example.com'}),sentDraft=await readyDraft(d.env,sentLead);
  await run(d.env,"UPDATE drafts SET status='sent',approved_hash=NULL WHERE id=?",sentDraft.id);await run(d.env,"UPDATE leads SET last_sent_at=?,status='contacted' WHERE id=?",new Date().toISOString(),sentLead.id);
  await seedBackup(d.env,d.sqlite);return {...d,backup,lead,draft,sentLead,sentDraft,close:()=>{backup.close();d.close();}};
@@ -32,7 +32,7 @@ test('saved workspace serves complete prospect pages, drafts, fetched emails, se
   const sent=await(await request(f.env,'/api/prospects?group=sent',cookie)).json() as any;assert.equal(sent.rows.length,1);assert.equal(sent.rows[0].draft_id,f.sentDraft.id);
   const detail=await(await request(f.env,'/api/prospects/'+f.lead.id,cookie)).json() as any;assert.equal(detail.drafts[0].body,f.draft.body);assert.equal(detail.messages[0].body,'The complete fetched reply body.');
   const preview=await(await request(f.env,'/api/drafts/'+f.draft.id+'/preview',cookie)).json() as any;assert.ok(preview.body.includes(f.draft.body));assert.ok(preview.body.includes(testSettings.businessAddress));
-  const exported=await(await request(f.env,'/api/export',cookie)).json() as any;assert.equal(exported.leads.length,62);assert.equal(exported.drafts.length,2);assert.equal(exported.messages.length,1);assert.equal('sessions' in exported,false);
+  const exported=await(await request(f.env,'/api/export',cookie)).json() as any;assert.equal(exported.leads.length,62);assert.equal(exported.drafts.length,62);assert.equal(exported.messages.length,1);assert.equal('sessions' in exported,false);
   for(const group of ['all','pending','sent','contacted','followup','replied','attention'])assert.equal((await request(f.env,'/api/prospects?group='+group,cookie)).status,200);
   f.backup.restart();assert.equal((await request(f.env,'/api/dashboard',cookie)).status,200);
  }finally{f.close();}

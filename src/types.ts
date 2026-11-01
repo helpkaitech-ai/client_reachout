@@ -9,6 +9,7 @@ export interface Env {
  SENDER_EMAIL?: string; NOTIFY_EMAIL?: string;
  ENABLE_AUTOMATION?: string; ENABLE_SENDING?: string; ENABLE_NOTIFICATIONS?: string;
  AI_STAGES_PER_CYCLE?:string;
+ SAVED_WORKSPACE?:boolean;
 }
 export interface Product {id:string;name:string;website:string;description:string;remarks:string;sender_email:string;revision:number;state:string;analysis:string;approved_revision:number|null;error:string|null;enabled:number;created_at:string;updated_at:string;prospecting_paused?:boolean;}
 export interface Campaign { query: string; location: string; country: string; timezone: string; enabled: boolean }

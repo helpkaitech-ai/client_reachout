@@ -19,6 +19,8 @@ import {notificationPage,readNotifications} from './notifications';
 import {assertOutreachRunning,assertProspectingRunning,controlOutreach,controlProspecting} from './outreach-control';
 import {providerBlock,clearProviderBlock,assertProviderAvailable} from './provider-control';
 import {prepareWorkspaceSettings} from './workspace-settings';
+import {backfillAdmissions,qualifiedToday} from './qualified-prospects';
+import {discoveryProgress} from './discovery-cycles';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -39,6 +41,7 @@ function connections(env:Env,s:Settings) {
 }
 async function dashboard(env:Env,compact=false,saved=false) {
  const s=await settings(env);
+ if(!saved)await backfillAdmissions(env);
  const [stats,usage,budgets,drafts,leads,messages,jobs,events,runs,notifications,expenses]=await Promise.all([
   all(env,'SELECT status,COUNT(*) count FROM leads GROUP BY status'),
   one(env,'SELECT * FROM daily_usage WHERE day=?',day()),
@@ -51,7 +54,7 @@ async function dashboard(env:Env,compact=false,saved=false) {
   all(env,'SELECT * FROM events ORDER BY id DESC LIMIT 60'),all(env,'SELECT * FROM discovery_batches ORDER BY created_at DESC LIMIT 20'),
   compact?Promise.resolve([]):all(env,'SELECT * FROM notifications ORDER BY created_at DESC LIMIT 10'),compact?Promise.resolve([]):all(env,'SELECT * FROM expenses ORDER BY created_at DESC LIMIT 100')
  ]);
- const metrics=await one(env,`SELECT
+ const metrics=await one<any>(env,`SELECT
  (SELECT COUNT(*) FROM leads) prospects,
  (SELECT COUNT(*) FROM drafts WHERE status='pending') review,
  (SELECT COUNT(*) FROM drafts WHERE status='sent') sent,
@@ -62,7 +65,11 @@ async function dashboard(env:Env,compact=false,saved=false) {
  (SELECT COUNT(*) FROM drafts WHERE status='approved') scheduled,
  (SELECT COUNT(*) FROM jobs WHERE state IN ('pending','running') AND kind IN ('research','rewrite')) researching,
  (SELECT COUNT(*) FROM drafts WHERE kind='initial' AND quality_hold='' AND created_at>=?) draftedToday`,day()+'T00:00:00.000Z',day()+'T00:00:00.000Z');
- const enrichedDrafts=(drafts as any[]).map(d=>{const l=(leads as Lead[]).find(l=>l.id===d.lead_id);return {...d,sendIssues:l?approvalProblems(d,{...l,eligibility:l.eligibility==='ineligible'?'ineligible':'eligible',eligibility_note:'Confirmed at approval',verification:l.verification==='invalid'?'invalid':'owner_reviewed'},s):['Prospect record not in current view']};});
+ const readyPage=await prospectPage(env,new URL('https://relay.internal/api/prospects'));
+ metrics.prospects=(readyPage.counts as any).total;metrics.review=(readyPage.counts as any).pending;
+ if(!saved)metrics.draftedToday=await qualifiedToday(env);
+ if(env.PRODUCT_ID&&!saved)metrics.campaign=await discoveryProgress(env,s);
+ const enrichedDrafts=(drafts as any[]).filter(d=>d.status==='sent'||readyPage.rows.some((l:any)=>l.draft_id===d.id)).map(d=>{const l=(leads as Lead[]).find(l=>l.id===d.lead_id);return {...d,sendIssues:l?approvalProblems(d,{...l,eligibility:l.eligibility==='ineligible'?'ineligible':'eligible',eligibility_note:'Confirmed at approval',verification:l.verification==='invalid'?'invalid':'owner_reviewed'},s):['Prospect record not in current view']};});
  const pipeline={provider:'openai',providerBlock:saved?null:await providerBlock(env),pausedJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('paused','paused_provider')"))?.n||0,waitingResearch:await researchBacklog(env),attentionJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')"))?.n||0};
  return {settings:s,locationOptions,connections:connections(env,s),metrics,stats,usage,budgets,pipeline,drafts:enrichedDrafts,leads,messages,jobs,events,runs,notifications,expenses,date:day()};
 }

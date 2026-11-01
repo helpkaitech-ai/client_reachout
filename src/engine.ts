@@ -8,6 +8,7 @@ import {StageYield,type Workflow} from './ai';
 import {requireProductReady,productList,scopeProduct,advanceProductAnalysis} from './products';
 import {outreachPaused,OutreachPaused,ProspectingPaused,prospectingPaused} from './outreach-control';
 import {providerBlock,OpenAICreditBlocked,releaseUnspentResearchClaim} from './provider-control';
+import {admissionAvailable} from './qualified-prospects';
 
 export async function scheduleResearch(env:Env){
  const at=now(),prefix=env.PRODUCT_ID?'initial-product:'+env.PRODUCT_REVISION+':':'initial-ai:';
@@ -46,6 +47,9 @@ export async function processJob(env:Env,job:Job){
   else if(['research','rewrite','followup','reply'].includes(job.kind)){
    const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',job.lead_id);if(!lead)throw new Error('Prospect not found');
    if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');
+   if(job.kind==='research'&&env.PRODUCT_ID&&!await admissionAvailable(env,s,lead.id)){
+    await run(env,"UPDATE jobs SET state='paused',error='Qualified email target reached for this UTC day',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
+   }
    if(job.kind==='research'&&!await claimResearchBusiness(env,lead.id,s.dailyResearchLimit)){
     await run(env,"UPDATE jobs SET state='paused',error='Daily business research allowance reached',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
    }

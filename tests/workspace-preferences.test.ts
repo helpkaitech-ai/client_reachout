@@ -65,7 +65,7 @@ test('customer inputs on product creation are validated, exposed for editing and
 test('product geography overrides retain OpenAI-derived topics, and each workspace obeys its own search interval',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='mock';try{
   const [a,b]=await pair(env),sa=await manualApprove(env,a.id),sb=await manualApprove(env,b.id),campaign={query:'AI-selected editing agencies',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true};
-  for(const [scope,interval]of [[sa,9],[sb,2]] as const){await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,campaigns:[campaign],locationIds:['city:mumbai'],discoveryIntervalDays:interval,discoveryPaused:false,prospectingPaused:false}));const date=new Date(Date.now()-4*86400000).toISOString();await run(scope,"INSERT INTO discovery_batches(id,job_id,campaign,state,created_at,updated_at) VALUES('past','past',?,'complete',?,?)",JSON.stringify(campaign),date,date);}
+  for(const [scope,interval]of [[sa,9],[sb,2]] as const){await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,campaigns:[campaign],locationIds:['city:mumbai'],discoveryIntervalDays:interval,discoveryPaused:false,prospectingPaused:false}));const date=new Date(Date.now()-4*86400000).toISOString();await run(scope,"INSERT INTO discovery_batches(id,job_id,campaign,state,created_at,updated_at) VALUES('past','past',?,'complete',?,?)",JSON.stringify(campaign),date,date);await run(scope,"INSERT INTO discovery_cycles(id,created_at,completed_at,product_revision,target) VALUES('past',?,?,?,12)",date,date,scope.PRODUCT_REVISION);}
   const selected=nextProductCampaign(await settings(sa),[]);assert.equal(selected.country,'IN');assert.equal(selected.location,'Mumbai, India');assert.equal(selected.query,campaign.query);
   assert.equal((await startDiscovery(sa,await settings(sa))).state,'cooldown');assert.equal((await startDiscovery(sb,await settings(sb))).state,'queued');assert.equal((await all(sa,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(sb,'SELECT * FROM ai_attempts')).length,0);
  }finally{close();}
@@ -75,7 +75,7 @@ test('per-product new prospect limits are enforced independently and invalid set
  const {env,close}=database();try{
   const [a,b]=await pair(env),sa=await manualApprove(env,a.id),sb=await manualApprove(env,b.id),cookie=await login(env);
   assert.equal((await req(env,'/api/settings/preferences?product='+a.id,{...await settings(sa),dailyLeadLimit:1},cookie)).status,200);
-  await importLead(sa,{company:'One',website:'https://one.example.org'});await assert.rejects(importLead(sa,{company:'Two',website:'https://two.example.org'}),/1 new leads/);assert.ok(await importLead(sb,{company:'Two',website:'https://two.example.org'}));
+  await importLead(sa,{company:'One',website:'https://one.example.org'});assert.ok(await importLead(sa,{company:'Two',website:'https://two.example.org'}));assert.ok(await importLead(sb,{company:'Two',website:'https://two.example.org'}));
   const before=JSON.stringify(await settings(sa));for(const bad of [{dailyLeadLimit:21},{dailyTotalLimit:13},{openaiBudget:51},{customerTypes:['b2b','b2b']},{customerComments:'x'.repeat(8001)}])assert.equal((await req(env,'/api/settings/preferences?product='+a.id,{...await settings(sa),...bad},cookie)).status,400);
   assert.equal((await req(env,'/api/settings/sender?product='+a.id,{senderName:'x',businessAddress:'x',senderEmail:'invalid'},cookie)).status,400);assert.equal(JSON.stringify(await settings(sa)),before);
  }finally{close();}
