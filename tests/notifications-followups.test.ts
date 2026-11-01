@@ -130,7 +130,7 @@ test('real notification dropdown shows escaped previews, persists read state and
   async function until(fn:()=>boolean){for(let i=0;i<100;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('UI timeout');}
   await until(()=>doc.querySelector('#notification-count')!.textContent==='2'&&!!doc.querySelector('table'));(doc.querySelector('#notification-toggle') as HTMLElement).click();await until(()=>!(doc.querySelector('#notification-panel') as HTMLElement).hidden);
   assert.equal(doc.querySelector('#notification-list img'),null);assert.equal(doc.querySelector('#notification-list script'),null);assert.match(doc.querySelector('table')!.textContent!,/Reply received/);
-  const button=[...doc.querySelectorAll('[data-notification]')].find(b=>b.textContent?.includes('Reply received')) as HTMLElement;button.click();await until(()=>(doc.querySelector('#modal') as HTMLDialogElement).open);assert.match(doc.querySelector('#modal-content')!.textContent!,/quotation workflow/);assert.equal((await notificationPage(env)).unread,1);
+  const button=[...doc.querySelectorAll('[data-notification]')].find(b=>b.textContent?.includes('Reply received')) as HTMLElement;button.click();await until(()=>!!doc.querySelector('#draft-form'));assert.equal((doc.querySelector('#modal') as HTMLDialogElement).open,true);assert.match(doc.querySelector('#modal-content')!.textContent!,/quotation workflow/);assert.equal((await notificationPage(env)).unread,1);
   (doc.querySelector('#notifications-read-all') as HTMLElement).click();await until(()=>doc.querySelector('#notification-count')!.textContent==='0');assert.equal((await notificationPage(env)).unread,0);
  }finally{dom?.window.close();close();}
 });
