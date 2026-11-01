@@ -95,15 +95,15 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
   await audit(env,'leads_imported',null,`${added} added; ${duplicates} duplicates; ${errors.length} invalid`);return {added,duplicates,errors};
  }
  if(path==='/api/discover'||path==='/api/discovery/sync'){
-  if(s.discoveryPaused)return {state:'paused',message:'Discovery is paused. Resume discovery in this prospect workspace.'};
+  if(s.discoveryPaused&&path==='/api/discovery/sync')return {state:'paused',message:'Automatic discovery is paused. Find prospects can request a manual search.'};
   if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
-  const resumeAt=discoveryPause(s);if(resumeAt)return {state:'paused',resumeAt,message:`New prospect searches are paused until ${resumeAt}. Existing business research continues.`};
+  const resumeAt=discoveryPause(s);if(resumeAt&&path==='/api/discovery/sync')return {state:'paused',resumeAt,message:`Automatic prospect searches are paused until ${resumeAt}. Find prospects can request a manual search.`};
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
   const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') LIMIT 1");
   if(active)return {state:active.state,runId:active.id,message:'Your prospect search is already running or queued. Results appear automatically.'};
-  if(env.PRODUCT_ID)return startDiscovery(env,s,nextProductCampaign(s,await searchHistory(env)),crypto.randomUUID());
+  if(env.PRODUCT_ID)return startDiscovery(env,s,nextProductCampaign(s,await searchHistory(env)),crypto.randomUUID(),true);
   const plan=env.PRODUCT_ID?s.campaigns.filter(c=>c.enabled):manualSearchPlan(s,await searchHistory(env));const batch=crypto.randomUUID();let first;
-  for(const [index,campaign] of plan.entries()){const result=await startDiscovery(env,s,campaign,batch+':'+index);if(!first)first=result;}
+  for(const [index,campaign] of plan.entries()){const result=await startDiscovery(env,s,campaign,batch+':'+index,true);if(!first)first=result;}
   return {...first,locations:plan.map(c=>c.location),message:plan.length>1?`Queued ${plan.length} location searches. Public business research continues automatically.`:first?.message};
  }
  if(path==='/api/notify'){await notifyDigest(env,s,true);return {ok:true};}

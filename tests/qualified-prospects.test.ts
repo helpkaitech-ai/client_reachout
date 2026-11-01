@@ -99,6 +99,7 @@ test('twelve distinct qualified prospects complete a cycle; rejected candidates 
   await run(x.scope,"UPDATE discovery_batches SET state='complete'");await run(x.scope,"UPDATE jobs SET state='complete'");
   for(let i=0;i<12;i++){const q=await eligible(x.scope,'Good '+i,'good'+i+'@example.org');await recordAdmission(x.scope,q.lead.id,q.draft.id);await run(x.scope,"INSERT INTO discovery_candidates(id,batch_id,entity_key,data,outcome,lead_id,created_at) VALUES(?,?,?,'{}','imported',?,?)",'c'+i,batch,'k'+i,q.lead.id,now());}
   assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'cooldown');assert.equal(await qualifiedToday(x.scope),12);assert.equal((await prospectPage(x.scope,page)).total,12);
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'daily_target');
   assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);assert.ok((await one<any>(x.scope,'SELECT completed_at FROM discovery_cycles'))!.completed_at);
   await run(x.scope,"UPDATE discovery_cycles SET completed_at=?",new Date(Date.now()-7*86400000).toISOString());assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'daily_target');
   await run(x.scope,'UPDATE qualified_prospects SET admitted_at=?',new Date(Date.now()-86400000).toISOString());assert.equal(await qualifiedToday(x.scope),0);assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).qualified,12);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');
@@ -110,8 +111,8 @@ test('a paused workspace cannot create replacement searches or incur provider wo
  try{await tick(x.scope);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'paused');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,0);assert.equal(calls,0);}finally{globalThis.fetch=original;x.close();}
 });
 
-test('an active campaign replaces four rejected candidates with twelve distinct fully drafted prospects without sending',async()=>{
- const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();let batch=0;
+for(const automatic of [true,false])test('an '+(automatic?'automatic':'explicit manual')+' campaign replaces four rejected candidates with twelve distinct fully drafted prospects without sending',async()=>{
+ const x=await setup(automatic?{}:{researchAutomation:false,discoveryPaused:true}),original=globalThis.fetch,ai=mockOpenAI();let batch=0;
  const address=(company:string)=>'team@'+company.toLowerCase().replace(/\s/g,'')+'.example.org';
  globalThis.fetch=(async(url:any,init:any)=>{
   const request=JSON.parse(init.body),input=JSON.parse(request.input),response=await ai.fetcher(url,init),data:any=await response.json(),last=data.output.at(-1).content[0],stage=request.text?.format.name?.replace('relay_','')||'';
@@ -129,11 +130,12 @@ test('an active campaign replaces four rejected candidates with twelve distinct 
   return Response.json(data);
  }) as typeof fetch;
  try{
+  if(!automatic)assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'queued');
   for(let i=0;i<180;i++){await tick(x.scope);if(await qualifiedToday(x.scope)===12)break;}
   assert.equal(await qualifiedToday(x.scope),12);const result:any=await prospectPage(x.scope,page);assert.equal(result.total,12);assert.equal(new Set(result.rows.map((l:any)=>l.email)).size,12);assert.equal(result.counts.attention,0);
   assert.equal((await all(x.scope,"SELECT * FROM leads WHERE status='not_qualified'")).length,4);assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,12);
   assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,4);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
   assert.equal((await all(x.scope,'SELECT * FROM research_claims')).length,16);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
-  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'cooldown');
+  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,!automatic)).state,automatic?'cooldown':'daily_target');
  }finally{globalThis.fetch=original;x.close();}
 });

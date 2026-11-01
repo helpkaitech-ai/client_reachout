@@ -23,7 +23,7 @@ test('automatic discovery waits six days, while manual searches remain available
  }finally{close();}
 });
 
-test('a search hold blocks automatic and manual enqueueing, including the hosted discover API',async()=>{
+test('a timed automatic hold is bypassed by the authenticated manual discover API',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='test';const pausedUntil=new Date(Date.now()+3*86400000).toISOString();
  try{
   const s={...testSettings,discoveryPausedUntil:pausedUntil};await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(s));
@@ -31,8 +31,8 @@ test('a search hold blocks automatic and manual enqueueing, including the hosted
   const origin=env.APP_URL!,headers={Origin:origin,'X-Requested-With':'Prepyr','Content-Type':'application/json'},ctx={waitUntil:()=>{}} as unknown as ExecutionContext;
   const login=await worker.fetch(new Request(origin+'/api/login',{method:'POST',headers,body:JSON.stringify({password:env.ADMIN_PASSWORD})}),env,ctx);
   const response=await worker.fetch(new Request(origin+'/api/discover',{method:'POST',headers:{...headers,Cookie:login.headers.get('set-cookie')!.split(';')[0]},body:'{}'}),env,ctx);
-  assert.equal(response.status,200);assert.equal((await response.json() as any).resumeAt,pausedUntil);
-  assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(env,'SELECT * FROM jobs')).length,0);
+  assert.equal(response.status,200);assert.equal((await response.json() as any).state,'queued');assert.equal((await settings(env)).discoveryPausedUntil,pausedUntil);
+  assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,1);assert.equal(JSON.parse((await one<any>(env,'SELECT payload FROM jobs'))!.payload).manual,true);
  }finally{close();}
 });
 

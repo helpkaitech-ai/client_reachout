@@ -40,8 +40,8 @@ test('resume requires authenticated same-origin owner action and leaves workspac
  const {env,close}=database(),original=globalThis.fetch;let calls=0;globalThis.fetch=(async()=>{calls++;throw Error('No provider');}) as typeof fetch;env.OPENAI_API_KEY='test';
  try{
   await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true,discoveryPaused:true}));assert.equal((await req(env,'/api/outreach/control',{paused:false})).status,401);const cookie=await login(env);assert.equal((await req(env,'/api/outreach/control',{paused:false},cookie,'https://wrong.example')).status,403);
-  assert.equal((await req(env,'/api/outreach/control',{paused:false},cookie)).status,200);assert.equal((await settings(env)).outreachPaused,false);assert.equal((await settings(env)).discoveryPaused,true);assert.equal((await(await req(env,'/api/discover',{},cookie)).json() as any).state,'paused');
-  assert.equal((await req(env,'/api/discovery/control',{paused:false},cookie)).status,200);assert.equal((await settings(env)).discoveryPaused,false);assert.equal((await settings(env)).discoveryIntervalDays,6);assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,0);assert.equal(calls,0);
+  assert.equal((await req(env,'/api/outreach/control',{paused:false},cookie)).status,200);assert.equal((await settings(env)).outreachPaused,false);assert.equal((await settings(env)).discoveryPaused,true);assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,0);assert.equal((await(await req(env,'/api/discover',{},cookie)).json() as any).state,'queued');
+  assert.equal((await req(env,'/api/discovery/control',{paused:false},cookie)).status,200);assert.equal((await settings(env)).discoveryPaused,false);assert.equal((await settings(env)).discoveryIntervalDays,6);assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,1);assert.equal(calls,0);
  }finally{globalThis.fetch=original;close();}
 });
 

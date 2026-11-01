@@ -9,11 +9,14 @@ import {requireProductReady,productList,scopeProduct,advanceProductAnalysis} fro
 import {outreachPaused,OutreachPaused,ProspectingPaused,prospectingPaused} from './outreach-control';
 import {providerBlock,OpenAICreditBlocked,releaseUnspentResearchClaim} from './provider-control';
 import {admissionAvailable} from './qualified-prospects';
+import {manualCampaignPending} from './discovery-cycles';
 
-export async function scheduleResearch(env:Env){
+export async function scheduleResearch(env:Env,manualOnly=false){
  const at=now(),prefix=env.PRODUCT_ID?'initial-product:'+env.PRODUCT_REVISION+':':'initial-ai:';
+ const manual="EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_batches b ON b.id=c.batch_id JOIN jobs dj ON dj.id=b.job_id WHERE c.lead_id=leads.id AND json_extract(dj.payload,'$.manual')=1)";
  await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
- SELECT ?||id,'research',id,'{}',?,? FROM leads WHERE status IN ('new','researched','held')
+ SELECT ?||id,'research',id,CASE WHEN ${manual} THEN '{"manual":true}' ELSE '{}' END,?,? FROM leads WHERE status IN ('new','researched','held')
+ ${manualOnly?'AND '+manual:''}
  AND id NOT IN (SELECT lead_id FROM drafts)
  AND id NOT IN (SELECT lead_id FROM jobs WHERE state IN ('pending','running','uncertain','failed','paused','paused_provider') AND lead_id IS NOT NULL)
  ORDER BY CASE WHEN email IS NOT NULL THEN 0 ELSE 1 END,created_at LIMIT 100`,prefix,at,at);
@@ -40,8 +43,8 @@ export async function processJob(env:Env,job:Job){
   requireProductReady(env);
   const s=await settings(env);let result;
   if(job.kind==='discover_search'){
-   if(s.discoveryPaused){await run(env,"UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return {paused:true};}
-   const resumeAt=discoveryPause(s);if(resumeAt){await run(env,"UPDATE jobs SET state='paused',error='New prospect searches temporarily paused; existing business research continues',next_run_at=?,updated_at=? WHERE id=? AND state='running'",resumeAt,now(),job.id);return;}
+   if(s.discoveryPaused&&!payload.manual){await run(env,"UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return {paused:true};}
+   const resumeAt=discoveryPause(s);if(resumeAt&&!payload.manual){await run(env,"UPDATE jobs SET state='paused',error='New prospect searches temporarily paused; existing business research continues',next_run_at=?,updated_at=? WHERE id=? AND state='running'",resumeAt,now(),job.id);return;}
    result=await runDiscovery(env,s,job,w);
   }
   else if(['research','rewrite','followup','reply'].includes(job.kind)){
@@ -70,13 +73,13 @@ export async function processJob(env:Env,job:Job){
  }
 }
 export async function processDiscovery(env:Env){const job=await one<Job>(env,"SELECT * FROM jobs WHERE kind='discover_search' AND state='pending' ORDER BY created_at,id LIMIT 1");return job?processJob(env,job):undefined;}
-export async function processAvailableJobs(env:Env,currentSettings?:Settings){
+export async function processAvailableJobs(env:Env,currentSettings?:Settings,manualOnly=false){
  if(!env.OPENAI_API_KEY||(!currentSettings&&await outreachPaused(env)))return;
  const s=currentSettings||await settings(env);
  if(s.outreachPaused||s.prospectingPaused)return;
  // Each checkpoint invocation makes at most one paid call. The paid deployment
  // may advance up to three checkpoints per cycle; Free retains a one-step default.
- const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') AND (kind<>'discover_search' OR ?=0) ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`,s.discoveryPaused?1:0);
+ const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') AND (kind<>'discover_search' OR ?=0 OR json_extract(payload,'$.manual')=1) AND (?=0 OR json_extract(payload,'$.manual')=1) ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`,s.discoveryPaused?1:0,manualOnly?1:0);
  if(job){await processJob(env,job);return true;}return false;
 }
 export async function tick(env:Env){
@@ -102,14 +105,17 @@ export async function tick(env:Env){
     SELECT 'followup:'||id||':'||followup_count,'followup',id,'{}',?,? FROM leads
     WHERE next_followup_at IS NOT NULL AND last_inbound_at IS NULL AND status='contacted' AND followup_count<?
     AND NOT EXISTS(SELECT 1 FROM drafts WHERE lead_id=leads.id AND status IN ('pending','approved','sending','uncertain'))`,now(),now(),Math.min(3,s.followupDays.length));
-  }
+  }else await scheduleResearch(env,true);
+  // Finish the one campaign explicitly requested by the owner even if automatic
+  // campaigns are disabled. Completion never starts a second manual campaign.
+  if(env.PRODUCT_ID&&await manualCampaignPending(env))await startDiscovery(env,s,undefined,undefined,true,true);
   const dispatchWork={processed:0};
   if(inboxOk)await sendApproved(env,s,undefined,dispatchWork);
-  if(s.researchAutomation!==false&&inboxWork.processed===0&&dispatchWork.processed===0){
+  if(inboxWork.processed===0&&dispatchWork.processed===0){
    const stages=Math.min(3,Math.max(1,Math.floor(Number(env.AI_STAGES_PER_CYCLE)||1)));
    for(let step=0;step<stages;step++){
     if(step>0&&(await providerBlock(env)||await prospectingPaused(env)))break;
-    if(!await processAvailableJobs(env,s))break;
+    if(!await processAvailableJobs(env,s,s.researchAutomation===false))break;
    }
   }
   if(new Date().getUTCHours()>=3)await notifyDigest(env,s);

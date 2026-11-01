@@ -1,5 +1,5 @@
 import type {Env,Settings,Campaign,Job} from './types';
-import {all,now,one,run,uid,audit} from './db';
+import {all,now,one,run,uid,audit,acquire,release} from './db';
 import {nextCampaign,nextProductCampaign,type SearchHistory} from './locations';
 import {openai,outputText} from './providers';
 import {StageYield,type Workflow} from './ai';
@@ -16,18 +16,25 @@ export function discoveryPause(s:Settings){return Date.parse(s.discoveryPausedUn
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({company:str,contact_name:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},contactScope:{type:'string',enum:['organization','public_professional','private_consumer']},sensitivePersonalTarget:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
-export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string){
+export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=false,continuation=false){
+ const owner=await acquire(env,'discovery-enqueue',60);
+ if(!owner)return {state:'queued',runId:undefined,message:'A prospect search request is already being queued. Results appear automatically.'};
+ try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation);}finally{await release(env,'discovery-enqueue',owner);}
+}
+async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean){
  requireProductReady(env);
- if(s.discoveryPaused)return {state:'paused',message:'Discovery is paused. Resume discovery in this prospect workspace.'};
+ if(s.discoveryPaused&&!manual)return {state:'paused',message:'Automatic discovery is paused. Find prospects can request a manual search.'};
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
- const resumeAt=discoveryPause(s);if(resumeAt)return {state:'paused',resumeAt,message:`New prospect searches are paused until ${resumeAt}. Existing business research continues.`};
+ const resumeAt=discoveryPause(s);if(resumeAt&&!manual)return {state:'paused',resumeAt,message:`Automatic prospect searches are paused until ${resumeAt}. Find prospects can request a manual search.`};
  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') ORDER BY created_at LIMIT 1");
  if(active&&(!intent||env.PRODUCT_ID))return {state:active.state,runId:active.id,message:'Your prospect search is already queued or running. Results appear automatically.'};
- const cycle=env.PRODUCT_ID?await prepareDiscoveryCycle(env,s):null;
- if(cycle&&cycle.state!=='ready')return {state:cycle.state,message:'Qualified prospect research follows the workspace target, research limits and campaign interval.'};
+ if(env.PRODUCT_ID)await assertProspectingRunning(env);
+ const cycle=env.PRODUCT_ID?await prepareDiscoveryCycle(env,s,manual,continuation):null;
+ const reasons={cooldown:'The automatic campaign is waiting for the configured interval. Find prospects starts a manual search without that wait.',daily_target:`This workspace has reached its ${Math.min(s.dailyLeadLimit,s.dailyNewLimit)} qualified-email limit for today. The daily allowance resets at 00:00 UTC.`,research_limit:`This workspace has used or queued its ${s.dailyResearchLimit} research slots for today. The daily allowance resets at 00:00 UTC.`,researching:'Existing candidates are being researched. Find prospects can request another manual batch within the remaining allowance.',search_limit:'The automatic search allowance for today has been reached. Find prospects can request another manual search within the remaining research and budget limits.'};
+ if(cycle&&cycle.state!=='ready')return {state:cycle.state,message:reasons[cycle.state]};
  const last=await one<any>(env,'SELECT created_at FROM discovery_batches ORDER BY created_at DESC LIMIT 1');
- if(!env.PRODUCT_ID&&!selected&&last&&Date.now()-Date.parse(last.created_at)<s.discoveryIntervalDays*86400000)return {state:'cooldown',message:'The next search starts after the configured interval.'};
- await assertProspectingRunning(env);
+ if(!manual&&!env.PRODUCT_ID&&!selected&&last&&Date.now()-Date.parse(last.created_at)<s.discoveryIntervalDays*86400000)return {state:'cooldown',message:'The next automatic search starts after the configured interval. Find prospects overrides that wait.'};
+ if(!env.PRODUCT_ID)await assertProspectingRunning(env);
  await assertProviderAvailable(env);
  const history=await searchHistory(env),choices=s.campaigns.filter(c=>c.enabled);
  const base=selected||(env.PRODUCT_ID?nextProductCampaign(s,history):nextCampaign(s,history));
@@ -36,7 +43,7 @@ export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,inten
  const campaign={...base,searchAngle:env.PRODUCT_ID?'Follow the owner-approved product targeting and remarks':searchAngle},id=intent||uid(),jobId='discovery:'+id,at=now();
  await env.DB.batch([
   env.DB.prepare('INSERT OR IGNORE INTO discovery_batches(id,job_id,campaign,created_at,updated_at) VALUES(?,?,?,?,?)').bind(id,jobId,JSON.stringify(campaign),at,at),
-  env.DB.prepare("INSERT OR IGNORE INTO jobs(id,kind,payload,created_at,updated_at) VALUES(?,'discover_search',?,?,?)").bind(jobId,JSON.stringify({batchId:id,campaign,maximumCandidates:cycle?.state==='ready'?cycle.capacity:Math.min(10,s.discoveryResults)}),at,at),
+  env.DB.prepare("INSERT OR IGNORE INTO jobs(id,kind,payload,created_at,updated_at) VALUES(?,'discover_search',?,?,?)").bind(jobId,JSON.stringify({batchId:id,campaign,manual,maximumCandidates:cycle?.state==='ready'?cycle.capacity:Math.min(10,s.discoveryResults)}),at,at),
   ...(cycle?.state==='ready'?[env.DB.prepare('INSERT OR IGNORE INTO discovery_cycle_batches(batch_id,cycle_id) VALUES(?,?)').bind(id,cycle.cycleId)]:[])
  ]);
  return {state:'queued',runId:id,message:`Searching for independent businesses in ${campaign.location}. Public sources and emails will be researched before review.`};

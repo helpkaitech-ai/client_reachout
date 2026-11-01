@@ -32,15 +32,15 @@ async function boot(options:{approved?:boolean;paused?:boolean;automation?:boole
  return {env,scope,p,dom,doc,requests,until,click,close:()=>{dom.window.close();close();}};
 }
 
-test('pending target approval has one actionable notice; both prospect controls stay disabled across refreshes',async()=>{
+test('pending target approval has one actionable notice; manual search opens profile review while Resume stays disabled',async()=>{
  const x=await boot();try{
   assert.equal(x.doc.querySelectorAll('#content .note.warning').length,1);
   assert.equal(x.doc.querySelectorAll('.workspace-notice li').length,1);
   assert.equal(x.doc.querySelector('#content')!.firstElementChild?.classList.contains('workspace-notice'),true);
   assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/Review and approve the target profile/);
-  for(const selector of ['[data-discovery-control]','[data-action="discover"]'])assert.equal((x.doc.querySelector(selector) as HTMLButtonElement).disabled,true);
+  assert.equal((x.doc.querySelector('[data-discovery-control]') as HTMLButtonElement).disabled,true);assert.equal((x.doc.querySelector('[data-action="discover"]') as HTMLButtonElement).disabled,false);
   await x.dom.window.eval('load()');assert.equal(x.doc.querySelectorAll('#content .note.warning').length,1);
-  x.click('[data-go="products"]');await x.until(()=>!!x.doc.querySelector('.profile-review'));
+  x.click('[data-action="discover"]');await x.until(()=>!!x.doc.querySelector('.profile-review'));
   assert.equal(x.doc.querySelectorAll('.profile-review li').length,4);
   assert.equal(x.doc.querySelector('[data-product-approve]')!.hasAttribute('disabled'),false);
   assert.match(x.doc.querySelector('.product-research')!.textContent!,/Unknowns do not have to be empty/);
@@ -52,7 +52,7 @@ test('pending target approval has one actionable notice; both prospect controls 
 
 test('answering unknowns opens editable product remarks without saving, approving or spending',async()=>{
  const x=await boot();try{
-  x.click('[data-go="products"]');await x.until(()=>!!x.doc.querySelector('.profile-review'));
+  x.click('[data-action="discover"]');await x.until(()=>!!x.doc.querySelector('.profile-review'));
   const answers=[...x.doc.querySelectorAll('[data-product-edit]')].find(b=>b.textContent==='Add answers or corrections') as HTMLElement;answers.click();
   await x.until(()=>!!x.doc.querySelector('#product-form'));
   assert.match((x.doc.querySelector('[name="remarks"]') as HTMLTextAreaElement).value,/mark buyer budgets unknown/);
@@ -75,7 +75,7 @@ test('explicit target approval accepts unknown buyer facts and leaves prospectin
   assert.equal(x.doc.querySelectorAll('.workspace-notice li').length,1);
   assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/Prospecting is paused/);
   assert.equal((x.doc.querySelector('[data-discovery-control]') as HTMLButtonElement).disabled,false);
-  assert.equal((x.doc.querySelector('[data-action="discover"]') as HTMLButtonElement).disabled,true);
+  assert.equal((x.doc.querySelector('[data-action="discover"]') as HTMLButtonElement).disabled,false);
   const writes=x.requests.filter(r=>r.method==='POST');assert.equal(writes.length,1);assert.match(writes[0].path,/\/approve$/);
   assert.equal((await all(x.scope,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
  }finally{x.close();}
@@ -89,6 +89,18 @@ test('settings distinguish the saved research cap and unknown buyer budget from 
   assert.match(text,/acknowledgement applies to sending emails, not product analysis or prospect research/);
   assert.equal((x.doc.querySelector('[name="providerPolicyConfirmed"]') as HTMLInputElement).checked,false);
   assert.equal(x.requests.some(r=>r.method==='POST'),false);
+ }finally{x.close();}
+});
+
+test('Find prospects offers an explicit workspace resume instead of silently clearing its pause',async()=>{
+ const x=await boot({approved:true});try{
+  x.env.OPENAI_API_KEY='mock';await run(x.scope,"UPDATE settings SET data=json_set(data,'$.campaigns',json(?))",JSON.stringify(analysis.campaigns));
+  x.click('[data-action="discover"]');await x.until(()=>!!x.doc.querySelector('[data-resume-and-find]'));
+  assert.equal((await settings(x.scope)).prospectingPaused,true);assert.equal(x.requests.some(r=>r.method==='POST'),false);
+  x.click('[data-resume-and-find]');await x.until(()=>x.requests.some(r=>r.path.startsWith('/api/discover?')));
+  await x.until(()=>!!x.doc.querySelector('#toast')?.textContent?.includes('Searching'));
+  assert.equal((await settings(x.scope)).prospectingPaused,false);assert.equal(x.requests.filter(r=>r.path.startsWith('/api/discover?')).length,1);
+  assert.equal((await all(x.scope,'SELECT * FROM ai_attempts')).length,0);
  }finally{x.close();}
 });
 
