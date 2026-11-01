@@ -1,13 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { root,readEnv,updateEnv,runtimeKeys } from './env.mjs';
+import { readEnv,updateEnv,runtimeKeys } from './env.mjs';
+import {wrangler as cloudflare} from './cloudflare.mjs';
 await import('./generate-product-schema.mjs');
 const e=readEnv();
 if(!e.ADMIN_PASSWORD||!e.SESSION_SECRET)throw new Error('Run npm run setup before deploying');
-const childEnv={...process.env,WRANGLER_SEND_METRICS:'false'};
-for(const key of ['CLOUDFLARE_ACCOUNT_ID','CLOUDFLARE_API_TOKEN'])if(e[key])childEnv[key]=e[key];
-function wrangler(args,input){const r=spawnSync(process.execPath,[path.join(root,'node_modules/wrangler/bin/wrangler.js'),...args],{cwd:root,env:childEnv,input,encoding:'utf8',maxBuffer:10*1024*1024});if(r.status!==0){console.error(r.stdout||'');console.error(r.stderr||r.error?.message||'Wrangler failed');process.exit(1);}if(!input)console.log(r.stdout);return r.stdout;}
+function wrangler(args,input){const output=cloudflare(args,input);if(!input)console.log(output);return output;}
 wrangler(['d1','migrations','apply','DB','--remote']);
 await import('./verify-schema.mjs');
 const output=wrangler(['deploy']);
