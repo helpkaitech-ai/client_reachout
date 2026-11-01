@@ -1,5 +1,5 @@
 import type {Env,Settings,Lead} from './types';
-import {one,run,day,now} from './db';
+import {one,run,day,now,audit} from './db';
 import {cleanEmail,publicUrl} from './policy';
 
 // One predicate is shared by the list, counters, admission limit and cycle goal.
@@ -24,6 +24,14 @@ export function readyDraftSql(product:boolean,l='l',d='d',saved=false){
 export function publicContactReady(lead:Lead){
  let c:any={};try{c=JSON.parse(lead.contact_evidence||'{}');}catch{}
  return !!cleanEmail(lead.email)&&lead.contact_status==='publicly_sourced'&&c.identityConfirmed===true&&c.evidenceType==='opened_page'&&!!publicUrl(c.sourceUrl)&&String(c.excerpt||'').toLowerCase().includes(lead.email!.toLowerCase());
+}
+export async function rejectCandidate(env:Env,lead:Lead,jobId:string,reason:string,rewrite?:{id:string;version:number}){
+ await env.DB.batch([
+  env.DB.prepare("UPDATE leads SET status=CASE WHEN last_sent_at IS NULL AND status NOT IN ('suppressed','closed','bounced') THEN 'not_qualified' ELSE status END,updated_at=? WHERE id=?").bind(now(),lead.id),
+  env.DB.prepare('INSERT OR REPLACE INTO pipeline_results(job_id,data,created_at) VALUES(?,?,?)').bind(jobId,JSON.stringify({qualified:false,reason}),now()),
+  ...(rewrite?[env.DB.prepare("UPDATE drafts SET quality_hold=?,status='rejected',approved_hash=NULL,updated_at=? WHERE id=? AND version=? AND status='pending'").bind(reason,now(),rewrite.id,rewrite.version)]:[])
+ ]);
+ await audit(env,'candidate_not_qualified',lead.id,reason);
 }
 export async function qualifiedToday(env:Env){
  return (await one<{n:number}>(env,`SELECT COUNT(*) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id WHERE q.admitted_at>=? AND d.kind='initial' AND ${readyDraftSql(!!env.PRODUCT_ID)}`,day()+'T00:00:00.000Z'))?.n||0;

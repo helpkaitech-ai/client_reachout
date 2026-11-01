@@ -5,6 +5,7 @@ import {collectSources,listedSource,domainOf,objectSchema,textField as str,resea
 import {cleanEmail} from './policy';
 import {all,now,one,run,uid} from './db';
 import {durationPolicy} from './offers';
+import {publicContactReady,rejectCandidate} from './qualified-prospects';
 
 const contactSchema=objectSchema({email:str,sourceUrl:str,excerpt:str,identityConfirmed:{type:'boolean'},evidenceType:{type:'string',enum:['opened_page','snippet','unknown']},reason:str});
 export function supportedContact(parsed:any,text:string,sources:{url:string}[]){
@@ -13,13 +14,13 @@ export function supportedContact(parsed:any,text:string,sources:{url:string}[]){
 }
 export async function researchContact(env:Env,s:Settings,lead:Lead,w:Workflow){
  const checkpoint=await one<{data:string}>(env,'SELECT data FROM pipeline_results WHERE job_id=?',w.jobId+':contact');
- if(checkpoint&&JSON.parse(checkpoint.data).policyVersion===2)return JSON.parse(checkpoint.data);
+ if(checkpoint&&JSON.parse(checkpoint.data).policyVersion===3)return JSON.parse(checkpoint.data);
  const report=await openai(env,s,JSON.stringify({company:lead.company,website:lead.website,city:lead.city,country:lead.country,knownEmail:lead.email}),`${researchSecurity}
  Research ONLY the public business contact for this exact business and location. Open its official contact, about or team pages. Do not guess email patterns. Identify an appropriate public business mailbox, its exact source URL and a short verbatim excerpt containing the exact email. Label full opened-page evidence versus snippets. Confirm the address belongs to this business; flag conflicts. Exclude privacy, abuse, billing, careers, jobs and no-reply mailboxes. If no appropriate public email is found, explicitly report NOT FOUND. Never claim deliverability verification.`,lead.id+':contact-search',{search:true,workflow:w,stage:'contact_search',domains:lead.website?[domainOf(lead.website)]:undefined,maxOutput:1600,maxTools:3});
  const evidence=await openai(env,s,JSON.stringify({report:outputText(report),sources:collectSources(report)}),`${researchSecurity} Extract the exact public business email and verbatim excerpt from the report only. Use empty strings and identityConfirmed=false if missing or conflicting. An email must literally occur in both the report and excerpt. Keep snippets labeled snippet. A consulted URL alone is not proof of a contact.`,lead.id+':contact-extract',{schema:contactSchema,workflow:w,stage:'contact_extract',maxOutput:1600});
  let parsed=JSON.parse(outputText(evidence)),text=outputText(report),sources=collectSources(report);
- if(!supportedContact(parsed,text,sources)){
-  const expanded=await openai(env,s,JSON.stringify({company:lead.company,website:lead.website,city:lead.city,country:lead.country}),`${researchSecurity} A focused official-domain search did not establish a contact. Make one bounded cross-domain pass through corroborated public trade associations and business profiles. Confirm exact business identity and location, and quote any public business email verbatim with its exact source URL. Label snippets, conflicts and unknowns. Return NOT FOUND rather than guessing.`,lead.id+':contact-expand',{search:true,workflow:w,stage:'contact_expand_search',maxTools:3,maxOutput:1600});
+ if(!supportedContact(parsed,text,sources)||parsed.evidenceType!=='opened_page'){
+  const expanded=await openai(env,s,JSON.stringify({company:lead.company,website:lead.website,city:lead.city,country:lead.country,previousContact:parsed}),`${researchSecurity} A focused official-domain search did not establish an opened-page business contact. Make one bounded cross-domain pass through corroborated public trade associations and business profiles. If earlier evidence is a snippet, open its exact source page and the official contact page to confirm the quoted email. Confirm exact business identity and location, and quote any appropriate public business email verbatim with its exact source URL. Exclude privacy, abuse, billing, careers, jobs and no-reply mailboxes. Label snippets, conflicts and unknowns. Return NOT FOUND rather than guessing.`,lead.id+':contact-expand',{search:true,workflow:w,stage:'contact_expand_search',maxTools:3,maxOutput:1600});
   const extra=await openai(env,s,JSON.stringify({report:outputText(expanded),sources:collectSources(expanded)}),`${researchSecurity} Extract only the exact public business email and verbatim excerpt present in this report. Missing or conflicting email means empty strings and identityConfirmed=false. Do not guess or verify mailbox delivery.`,lead.id+':contact-expand-extract',{schema:contactSchema,workflow:w,stage:'contact_expand_extract',maxOutput:1600});
   parsed=JSON.parse(outputText(extra));text=outputText(expanded);sources=collectSources(expanded);
  }
@@ -30,7 +31,7 @@ async function saveContact(env:Env,lead:Lead,w:Workflow,parsed:any,text:string,s
  const fresh=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;
  let status=supported?(parsed.evidenceType==='opened_page'?'publicly_sourced':'needs_review'):(email?'needs_review':'not_found');
  if(supported&&fresh.email&&fresh.email!==email)status='conflicting';
- const record={...parsed,email:email||'',status,policyVersion:2,observedAt:now(),deliverability:'unknown',limitation:'AI-extracted public evidence; owner must review recipient. This is not mailbox verification.'};
+ const record={...parsed,email:email||'',status,policyVersion:3,observedAt:now(),deliverability:'unknown',limitation:'AI-extracted public evidence; owner must review recipient. This is not mailbox verification.'};
  if(supported&&!fresh.email){
   const occupied=await one<any>(env,'SELECT id FROM leads WHERE email=? AND id<>?',email,lead.id);
   if(occupied){status=record.status='conflicting';record.reason='This address already belongs to another prospect; shared-recipient review required';}
@@ -52,6 +53,26 @@ export async function reconcileResearchContact(env:Env,s:Settings,lead:Lead,rese
  // Preserve useful earlier evidence if the later report adds no supported contact.
  if(supportedContact(parsed,research.report,research.sources))await saveContact(env,lead,w,parsed,research.report,research.sources,key);
  else await run(env,'INSERT OR REPLACE INTO pipeline_results(job_id,data,created_at) VALUES(?,?,?)',key,JSON.stringify({status:'not_found',reason:parsed.reason,policyVersion:2}),now());
+}
+
+// No new business research, fit analysis or draft generation until a usable
+// public contact is established. Reuse saved evidence without another search.
+export async function prepareInitialContact(env:Env,s:Settings,lead:Lead,w:Workflow,rewrite?:{id:string;version:number}){
+ let fresh=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;
+ if(publicContactReady(fresh))return fresh;
+ if(fresh.research){
+  const saved:Research=JSON.parse(fresh.research);
+  if(Date.parse(saved.gatheredAt)>=Date.now()-30*86400000){
+   await reconcileResearchContact(env,s,fresh,saved,w);
+   fresh=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;
+   if(publicContactReady(fresh))return fresh;
+  }
+ }
+ await researchContact(env,s,fresh,w);
+ fresh=(await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))!;
+ if(publicContactReady(fresh))return fresh;
+ await rejectCandidate(env,fresh,w.jobId,'No fully sourced, appropriate public business email is available. Stopped before deeper business research, product-fit analysis and drafting.',rewrite);
+ return null;
 }
 
 const factSchema=objectSchema({claim:str,sourceUrl:str,excerpt:str,evidenceType:{type:'string',enum:['opened_page','snippet']}});

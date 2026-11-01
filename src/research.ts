@@ -3,7 +3,7 @@ import { all, audit, now, one, run, uid } from './db';
 import { openai, outputText } from './providers';
 import { publicUrl, cleanEmail } from './policy';
 import type {Workflow} from './ai';
-import {researchContact,reconcileResearchContact,designSolution,assessDraft} from './intelligence';
+import {prepareInitialContact,designSolution,assessDraft} from './intelligence';
 import {collectSources,meaningfulSources} from './evidence';
 export {collectSources} from './evidence';
 import {introduction,workingPilotProblem,offerVersion,durationPolicy} from './offers';
@@ -41,14 +41,13 @@ export async function draftLead(env:Env,s:Settings,lead:Lead,kind:Draft['kind']=
  const existing=rewrite?await one<Draft>(env,"SELECT * FROM drafts WHERE id=? AND lead_id=? AND version=? AND status='pending'",rewrite.id,lead.id,rewrite.version):null;
  if(rewrite&&!existing)return; // Owner edited, sent or discarded it while the job was queued.
  if(!rewrite&&await one(env,"SELECT id FROM drafts WHERE lead_id=? AND status IN ('pending','approved','sending','uncertain')",lead.id)) return;
+ if(workflow&&kind==='initial'){const contactable=await prepareInitialContact(env,s,lead,workflow,rewrite);if(!contactable)return;lead=contactable;}
  if(existing?.quality_hold)lead={...lead,status:'held'};
- if(workflow&&kind==='initial')await researchContact(env,s,lead,workflow);
  let research:Research=lead.research?JSON.parse(lead.research):await researchLead(env,s,lead,false,workflow);
  if(kind==='initial'&&(lead.status==='held'||!meaningfulSources(research.sources))){
   research=await researchLead(env,s,{...lead,research:JSON.stringify(research)},true,workflow);
  }
  const evidenceGap=kind==='initial'&&!meaningfulSources(research.sources);
- if(workflow&&kind==='initial')await reconcileResearchContact(env,s,lead,research,workflow);
  const dossier=workflow&&kind==='initial'?await designSolution(env,s,lead,research,workflow):null;
  const messages=await all<{direction:string;subject:string;body:string;rfc_id:string}>(env,'SELECT direction,subject,body,rfc_id FROM messages WHERE lead_id=? ORDER BY created_at DESC LIMIT 8',lead.id);
  const previous=await one<Draft>(env,"SELECT * FROM drafts WHERE lead_id=? AND status='sent' ORDER BY created_at DESC LIMIT 1",lead.id);

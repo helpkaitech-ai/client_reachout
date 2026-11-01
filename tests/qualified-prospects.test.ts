@@ -7,8 +7,9 @@ import {tick,processAvailableJobs,scheduleResearch} from '../src/engine';
 import {startDiscovery} from '../src/discovery';
 import {qualifiedToday,backfillAdmissions,recordAdmission,admissionAvailable} from '../src/qualified-prospects';
 import {prospectPage} from '../src/prospects';
-import {mockOpenAI,sourceUrls} from './openai-fixture';
+import {mockOpenAI,sourceUrls,businessReport} from './openai-fixture';
 import {discoveryProgress} from '../src/discovery-cycles';
+import {prepareInitialContact} from '../src/intelligence';
 
 const page=new URL('https://outreach.example.com/api/prospects');
 async function setup(extra:any={}){
@@ -24,6 +25,40 @@ async function eligible(scope:any,company='Ready Company',email='ready@example.o
  await run(scope,"UPDATE leads SET dossier=?,contact_status='publicly_sourced',contact_evidence=? WHERE id=?",JSON.stringify({qualified:true}),JSON.stringify({identityConfirmed:true,evidenceType:'opened_page',sourceUrl:'https://pumps.example.com/contact',excerpt:'Contact '+email}),lead.id);
  const draft=await readyDraft(scope,lead);await run(scope,"UPDATE drafts SET status='pending',approved_hash=NULL WHERE id=?",draft.id);return {lead,draft};
 }
+
+for(const productWorkspace of [true,false])for(const contactFailure of ['missing','snippet','conflicting'] as const)test(`${productWorkspace?'product':'Existing outreach'} stops ${contactFailure} contacts before deep research and never automatically retries their paid stages`,async()=>{
+ const x=await setup(),scope=productWorkspace?x.scope:x.env,original=globalThis.fetch,ai=mockOpenAI({noEmail:contactFailure==='missing'});
+ globalThis.fetch=(async(url:any,init:any)=>{const request=JSON.parse(init.body),response=await ai.fetcher(url,init);if(contactFailure==='snippet'&&request.text?.format.name?.startsWith('relay_contact_')){const body:any=await response.json(),out=JSON.parse(body.output.at(-1).content[0].text);out.evidenceType='snippet';body.output.at(-1).content[0].text=JSON.stringify(out);return Response.json(body);}return response;}) as typeof fetch;
+ try{
+  if(!productWorkspace)await run(scope,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));
+  const lead=await readyLead(scope,{email:contactFailure==='conflicting'?'other@pumps.example.com':null});await scheduleResearch(scope);
+  for(let i=0;i<12;i++)await processAvailableJobs(scope);
+  const fresh=await one<any>(scope,'SELECT * FROM leads WHERE id=?',lead.id),job=await one<any>(scope,"SELECT * FROM jobs WHERE kind='research'");
+  assert.equal(fresh.status,'not_qualified');assert.equal(fresh.research,null);assert.equal(job.state,'complete');assert.equal((await all(scope,'SELECT * FROM drafts')).length,0);assert.equal((await prospectPage(scope,page)).total,0);
+  const stages=(await all<any>(scope,'SELECT stage FROM ai_attempts')).map(a=>a.stage);assert.ok(stages.length>=2&&stages.length<=4);assert.ok(stages.every(s=>s.startsWith('contact_')));assert.equal(ai.calls.filter(c=>c.tools).length,contactFailure==='conflicting'?1:2);
+  assert.match((await one<any>(scope,"SELECT detail FROM events WHERE type='candidate_not_qualified'")).detail,/Stopped before deeper business research/);
+  const costs=await all(scope,'SELECT * FROM expenses'),calls=ai.calls.length;await scheduleResearch(scope);for(let i=0;i<4;i++)await processAvailableJobs(scope);assert.equal(ai.calls.length,calls);assert.deepEqual(await all(scope,'SELECT * FROM expenses'),costs);assert.equal((await all(scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('snippet contact evidence gets one bounded source-opening pass before a valid researched draft is admitted',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=modifyAI((stage,out)=>{if(stage==='contact_extract')out.evidenceType='snippet';});globalThis.fetch=ai.fetcher;
+ try{
+  await readyLead(x.scope,{email:null});await scheduleResearch(x.scope);for(let i=0;i<12;i++)await processAvailableJobs(x.scope);
+  assert.equal((await prospectPage(x.scope,page)).total,1);const stages=(await all<any>(x.scope,'SELECT stage FROM ai_attempts ORDER BY created_at')).map(a=>a.stage);
+  assert.equal(stages.filter(s=>s==='contact_expand_search').length,1);assert.ok(stages.indexOf('contact_expand_extract')<stages.indexOf('business_research'));assert.equal(await qualifiedToday(x.scope),1);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('an already sourced contact incurs no provider work and saved business research can supply the contact without another web search',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
+ try{
+  const existing=await eligible(x.scope,'Sourced company','buyer@pumps.example.com');const contact=await prepareInitialContact(x.scope,await settings(x.scope),existing.lead,{jobId:'existing',paidCalls:0});assert.equal(contact!.email,'buyer@pumps.example.com');assert.equal(ai.calls.length,0);
+  await run(x.scope,'DELETE FROM drafts WHERE lead_id=?',existing.lead.id);await run(x.scope,'DELETE FROM leads WHERE id=?',existing.lead.id);
+  const saved=await readyLead(x.scope,{email:null});await run(x.scope,'UPDATE leads SET research=? WHERE id=?',JSON.stringify({report:businessReport,sources:sourceUrls.map(url=>({url,title:'Saved source'})),gatheredAt:now()}),saved.id);
+  const recovered=await prepareInitialContact(x.scope,await settings(x.scope),saved,{jobId:'saved-contact',paidCalls:0});assert.equal(recovered!.email,'buyer@pumps.example.com');assert.equal(ai.calls.length,1);assert.equal(ai.calls[0].tools,undefined);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=original;x.close();}
+});
 function modifyAI(transform:(stage:string,out:any,input:any)=>void){
  const ai=mockOpenAI(),calls:any[]=[];
  const fetcher=(async(url:any,init:any)=>{const input=JSON.parse(init.body),response=await ai.fetcher(url,init);calls.push(input);const stage=input.text?.format.name?.replace('relay_','')||'';
