@@ -2,12 +2,21 @@ import { readEnv,updateEnv,runtimeKeys } from './env.mjs';
 import {wrangler as cloudflare} from './cloudflare.mjs';
 await import('./generate-product-schema.mjs');
 const e=readEnv();
-if(!e.ADMIN_PASSWORD||!e.SESSION_SECRET)throw new Error('Run npm run setup before deploying');
+const existingSecrets=process.argv.includes('--existing-secrets');
+if(!existingSecrets&&(!e.ADMIN_PASSWORD||!e.SESSION_SECRET))throw new Error('Run npm run setup before deploying, or use --existing-secrets for an existing production app');
 function wrangler(args,input){const output=cloudflare(args,input);if(!input)console.log(output);return output;}
+if(existingSecrets){
+ const secrets=JSON.parse(wrangler(['secret','list']));
+ for(const name of ['ADMIN_PASSWORD','SESSION_SECRET','OPENAI_API_KEY'])if(!secrets.some(s=>s.name===name))throw new Error('Required production secret is missing: '+name);
+}
 wrangler(['d1','migrations','apply','DB','--remote']);
 await import('./verify-schema.mjs');
 const output=wrangler(['deploy']);
 const url=output.match(/https:\/\/prepyr-outreach\.[a-z0-9-]+\.workers\.dev/)?.[0];
+if(existingSecrets){
+ console.log(`Deployment complete; existing production secrets retained: ${url||e.APP_URL||'configured Worker'}`);
+ process.exit(0);
+}
 if(!e.APP_URL&&url){e.APP_URL=url;updateEnv({APP_URL:url});}
 if(!e.APP_URL)throw new Error('Set APP_URL to the deployed URL, then run npm run deploy again');
 const app=new URL(e.APP_URL);if(app.protocol!=='https:'||app.pathname!=='/'||app.search||app.hash)throw new Error('APP_URL must be an HTTPS origin, without path or query');

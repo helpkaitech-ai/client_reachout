@@ -3,43 +3,55 @@ import {one,run,uid,now,day} from './db';
 import {backfillAdmissions,qualifiedToday,readyDraftSql} from './qualified-prospects';
 
 export async function qualifiedInCycle(env:Env,id:string){
- return (await one<{n:number}>(env,`SELECT COUNT(DISTINCT q.lead_id) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id JOIN discovery_candidates c ON c.lead_id=q.lead_id JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id WHERE b.cycle_id=? AND ${readyDraftSql(true)}`,id))?.n||0;
+ return (await one<{n:number}>(env,`SELECT COUNT(DISTINCT lower(l.email)) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id JOIN discovery_candidates c ON c.lead_id=q.lead_id JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id WHERE b.cycle_id=? AND ${readyDraftSql(!!env.PRODUCT_ID)}`,id))?.n||0;
+}
+async function currentCycle(env:Env){
+ return one<any>(env,`SELECT * FROM discovery_cycles WHERE product_revision=? AND created_at>=?
+ AND EXISTS(SELECT 1 FROM discovery_cycle_batches cb JOIN discovery_batches b ON b.id=cb.batch_id JOIN jobs j ON j.id=b.job_id WHERE cb.cycle_id=discovery_cycles.id AND json_extract(j.payload,'$.manual')=1)
+ ORDER BY created_at DESC,rowid DESC LIMIT 1`,env.PRODUCT_REVISION||0,day()+'T00:00:00.000Z');
+}
+export async function cycleAllowance(env:Env,s:Settings){
+ const attempts=(await one<{n:number}>(env,'SELECT COUNT(*) n FROM research_claims WHERE day=?',day()))?.n||0;
+ const searches=(await one<{n:number}>(env,'SELECT COUNT(*) n FROM discovery_batches WHERE created_at>=?',day()+'T00:00:00.000Z'))?.n||0;
+ const searchLimit=Math.max(6,Math.ceil(s.dailyResearchLimit/Math.min(10,s.discoveryResults))*3);
+ return {attempts,searches,searchLimit};
 }
 export async function discoveryProgress(env:Env,s:Settings){
- const cycle=await one<any>(env,'SELECT * FROM discovery_cycles WHERE product_revision=? ORDER BY created_at DESC LIMIT 1',env.PRODUCT_REVISION||0);
- return {qualified:cycle?await qualifiedInCycle(env,cycle.id):0,target:Math.min(s.dailyLeadLimit,s.dailyNewLimit),state:cycle?.completed_at?'complete':cycle?'researching':'not_started'};
+ const cycle=await currentCycle(env),qualified=await qualifiedToday(env),allowance=await cycleAllowance(env,s);
+ const counts=await one<{rejected:number;candidates:number}>(env,"SELECT COUNT(*) candidates,coalesce(SUM(status='not_qualified'),0) rejected FROM leads WHERE created_at>=?",day()+'T00:00:00.000Z');
+ const blocked=await one<{state:string;error:string}>(env,"SELECT state,error FROM jobs WHERE state IN ('paused','paused_provider','failed','uncertain') AND created_at>=? ORDER BY CASE state WHEN 'paused_provider' THEN 0 WHEN 'uncertain' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END,updated_at DESC LIMIT 1",day()+'T00:00:00.000Z');
+ const pending=env.PRODUCT_ID&&!env.PRODUCT_APPROVED?await one<{value:string}>(env,"SELECT value FROM integration_state WHERE key='manual_search_request'"):null;
+ const profiling=!!pending&&JSON.parse(pending.value).day===day();
+ const state=qualified>=s.dailyLeadLimit?'complete':blocked?.state==='paused_provider'?'provider_blocked':blocked?.state==='paused'?'budget_paused':profiling&&blocked?'profile_failed':profiling?'profiling':!cycle?'not_started':allowance.attempts>=s.dailyResearchLimit?'research_limit':allowance.searches>=allowance.searchLimit?'search_limit':'researching';
+ const reason=state==='research_limit'?`Used ${allowance.attempts} of ${s.dailyResearchLimit} candidate research attempts. Increase the research allowance to keep replacing rejected candidates.`:state==='search_limit'?`Stopped after ${allowance.searchLimit} searches today without reaching the qualified target. Review targeting or locations before another search.`:['provider_blocked','budget_paused','profile_failed'].includes(state)?blocked?.error:state==='profiling'?'Generating and applying your product profile. Your requested search will continue automatically when it is ready.':state==='complete'?'Today’s qualified prospect target is complete.':state==='not_started'?'Click Find prospects to start today’s search. No searches run on a schedule.':'Searching and researching replacements until the qualified target or a displayed limit is reached.';
+ return {qualified,target:s.dailyLeadLimit,state,reason,...allowance,candidates:counts?.candidates||0,rejected:counts?.rejected||0};
 }
-
-export async function manualCampaignPending(env:Env){
- const cycle=await one<{id:string}>(env,`SELECT c.id FROM discovery_cycles c WHERE c.product_revision=? AND c.completed_at IS NULL AND EXISTS(SELECT 1 FROM discovery_cycle_batches b JOIN discovery_batches d ON d.id=b.batch_id JOIN jobs j ON j.id=d.job_id WHERE b.cycle_id=c.id AND json_extract(j.payload,'$.manual')=1) ORDER BY c.created_at DESC LIMIT 1`,env.PRODUCT_REVISION||0);
- if(!cycle)return false;
+export async function manualCampaignPending(env:Env,s:Settings){
+ const cycle=await currentCycle(env);if(!cycle||cycle.completed_at)return false;
+ if(await qualifiedToday(env)>=s.dailyLeadLimit){await run(env,'UPDATE discovery_cycles SET completed_at=? WHERE id=?',now(),cycle.id);return false;}
  const waiting=await one<{n:number}>(env,`SELECT COUNT(*) n FROM leads l WHERE l.status IN ('new','researched','held') AND EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id WHERE c.lead_id=l.id AND b.cycle_id=?) AND NOT EXISTS(SELECT 1 FROM drafts d WHERE d.lead_id=l.id) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.lead_id=l.id AND j.state IN ('failed','uncertain','paused_provider'))`,cycle.id);
  return !waiting?.n;
 }
-
 export async function prepareDiscoveryCycle(env:Env,s:Settings,manual=false,continuation=false){
  await backfillAdmissions(env);
- const revision=env.PRODUCT_REVISION||0,target=Math.min(s.dailyLeadLimit,s.dailyNewLimit);
- let cycle=await one<any>(env,'SELECT * FROM discovery_cycles WHERE product_revision=? ORDER BY created_at DESC LIMIT 1',revision);
- if(cycle&&!cycle.completed_at){
-  const qualified=await qualifiedInCycle(env,cycle.id);
-  if(qualified>=target){await run(env,'UPDATE discovery_cycles SET completed_at=? WHERE id=?',now(),cycle.id);cycle.completed_at=now();}
+ const target=s.dailyLeadLimit,revision=env.PRODUCT_REVISION||0;
+ let cycle=await currentCycle(env);
+ if(await qualifiedToday(env)>=target){
+  if(cycle&&!cycle.completed_at)await run(env,'UPDATE discovery_cycles SET completed_at=? WHERE id=?',now(),cycle.id);
+  return {state:'daily_target' as const};
  }
- if(cycle?.completed_at&&(continuation||!manual&&Date.now()-Date.parse(cycle.completed_at)<s.discoveryIntervalDays*86400000))return {state:'cooldown' as const};
- if(await qualifiedToday(env)>=target)return {state:'daily_target' as const};
- const attempts=(await one<{n:number}>(env,'SELECT COUNT(*) n FROM research_claims WHERE day=?',day()))?.n||0;
+ // A timer may only advance a campaign explicitly started today. It can never
+ // create the next campaign or carry yesterday's request into a new UTC day.
+ if(continuation&&(!cycle||cycle.completed_at))return {state:'manual_only' as const};
+ if(!manual)return {state:'manual_only' as const};
+ const {attempts,searches,searchLimit}=await cycleAllowance(env,s);
  if(attempts>=s.dailyResearchLimit)return {state:'research_limit' as const};
- const backlog=(await one<{n:number}>(env,"SELECT COUNT(*) n FROM leads l WHERE l.status IN ('new','researched','held') AND NOT EXISTS(SELECT 1 FROM drafts d WHERE d.lead_id=l.id) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.lead_id=l.id AND j.state IN ('failed','uncertain','paused_provider'))"))?.n||0;
- if(backlog&&!manual)return {state:'researching' as const};
- const searches=(await one<{n:number}>(env,'SELECT COUNT(*) n FROM discovery_batches WHERE created_at>=?',day()+'T00:00:00.000Z'))?.n||0;
- // Also bound zero-result searches, which consume credits but no research slots.
- const searchLimit=Math.max(1,Math.ceil(s.dailyResearchLimit/Math.min(10,s.discoveryResults))*2);
- if((!manual||continuation)&&searches>=searchLimit)return {state:'search_limit' as const};
+ const backlog=(await one<{n:number}>(env,`SELECT COUNT(*) n FROM leads l WHERE l.status IN ('new','researched','held') AND EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id WHERE c.lead_id=l.id AND b.cycle_id=?) AND NOT EXISTS(SELECT 1 FROM drafts d WHERE d.lead_id=l.id) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.lead_id=l.id AND j.state IN ('failed','uncertain','paused_provider'))`,cycle?.id||''))?.n||0;
+ if(backlog)return {state:'researching' as const};
+ if(searches>=searchLimit)return {state:'search_limit' as const};
  if(!cycle||cycle.completed_at){
-  const previous=await one<any>(env,'SELECT b.id,b.created_at,c.cycle_id FROM discovery_batches b LEFT JOIN discovery_cycle_batches c ON c.batch_id=b.id ORDER BY b.created_at DESC LIMIT 1');
-  cycle={id:uid(),created_at:!cycle&&previous&&!previous.cycle_id?previous.created_at:now(),target};
+  cycle={id:uid(),created_at:now(),target};
   await run(env,'INSERT INTO discovery_cycles(id,created_at,product_revision,target) VALUES(?,?,?,?)',cycle.id,cycle.created_at,revision,target);
-  if(previous&&!previous.cycle_id)await run(env,'INSERT OR IGNORE INTO discovery_cycle_batches(batch_id,cycle_id) VALUES(?,?)',previous.id,cycle.id);
  }
  return {state:'ready' as const,cycleId:cycle.id,capacity:Math.min(10,s.discoveryResults,s.dailyResearchLimit-attempts)};
 }

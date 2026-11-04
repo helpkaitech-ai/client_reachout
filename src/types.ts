@@ -44,11 +44,11 @@ export interface Draft {
 }
 export interface Evidence { observation: string; url: string; kind: 'observed'|'hypothesis'; relevance: string }
 export interface Research { report: string; sources: {url:string; title:string}[]; gatheredAt: string }
-export interface Job { id:string; kind:string; lead_id:string|null; payload:string; state:string; attempts:number }
+export interface Job { id:string; kind:string; lead_id:string|null; payload:string; state:string; attempts:number; created_at?:string }
 export const defaults: Settings = {
  locationIds:['worldwide'],
- dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:20,dailyLeadLimit:20,
- openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:true, outreachPaused:false, discoveryPaused:false, prospectingPaused:false,
+ dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:60,dailyLeadLimit:12,
+ openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:false, outreachPaused:false, discoveryPaused:true, prospectingPaused:false,
  sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,

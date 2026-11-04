@@ -5,7 +5,7 @@ import {draftLead} from './research';
 import {notifyDigest,sendApproved,syncInbox} from './mail';
 import {UncertainProviderError,ProviderError} from './providers';
 import {StageYield,type Workflow} from './ai';
-import {requireProductReady,productList,scopeProduct,advanceProductAnalysis} from './products';
+import {requireProductReady,productList,scopeProduct,advanceProductAnalysis,continueProductDiscovery} from './products';
 import {outreachPaused,OutreachPaused,ProspectingPaused,prospectingPaused} from './outreach-control';
 import {providerBlock,OpenAICreditBlocked,releaseUnspentResearchClaim} from './provider-control';
 import {admissionAvailable} from './qualified-prospects';
@@ -13,9 +13,9 @@ import {manualCampaignPending} from './discovery-cycles';
 
 export async function scheduleResearch(env:Env,manualOnly=false){
  const at=now(),prefix=env.PRODUCT_ID?'initial-product:'+env.PRODUCT_REVISION+':':'initial-ai:';
- const manual="EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_batches b ON b.id=c.batch_id JOIN jobs dj ON dj.id=b.job_id WHERE c.lead_id=leads.id AND json_extract(dj.payload,'$.manual')=1)";
+ const manual=`EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_batches b ON b.id=c.batch_id JOIN jobs dj ON dj.id=b.job_id WHERE c.lead_id=leads.id AND json_extract(dj.payload,'$.manual')=1 AND EXISTS(SELECT 1 FROM discovery_cycle_batches cb JOIN discovery_cycles cy ON cy.id=cb.cycle_id WHERE cb.batch_id=b.id AND cy.completed_at IS NULL AND cy.created_at>='${day()}T00:00:00.000Z' AND cy.product_revision=${env.PRODUCT_REVISION||0}))`;
  await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
- SELECT ?||id,'research',id,CASE WHEN ${manual} THEN '{"manual":true}' ELSE '{}' END,?,? FROM leads WHERE status IN ('new','researched','held')
+ SELECT ?||id,'research',id,CASE WHEN ${manual} THEN json_object('manual',json('true'),'campaignDay','${day()}') ELSE '{}' END,?,? FROM leads WHERE status IN ('new','researched','held')
  ${manualOnly?'AND '+manual:''}
  AND id NOT IN (SELECT lead_id FROM drafts)
  AND id NOT IN (SELECT lead_id FROM jobs WHERE state IN ('pending','running','uncertain','failed','paused','paused_provider') AND lead_id IS NOT NULL)
@@ -38,7 +38,9 @@ export async function recoverUnstartedResearch(env:Env){
 export async function processJob(env:Env,job:Job){
  if(await prospectingPaused(env)||await providerBlock(env))return {paused:true};
  const claim=await run(env,"UPDATE jobs SET state='running',attempts=attempts+1,error=NULL,updated_at=? WHERE id=? AND state='pending'",now(),job.id);if(!claim.meta.changes)return;
- const payload=JSON.parse(job.payload),w:Workflow={jobId:job.id,paidCalls:0,retryVersion:payload.retryVersion||0,priority:['reply','followup'].includes(job.kind),maxCost:payload.maxCost};
+ const payload=JSON.parse(job.payload);
+ if(['research','discover_search'].includes(job.kind)&&payload.manual&&(payload.campaignDay||job.created_at?.slice(0,10))!==day()){await run(env,"UPDATE jobs SET state='cancelled',error='Search request expired at the UTC day boundary; click Find prospects for today',updated_at=? WHERE id=?",now(),job.id);return;}
+ const w:Workflow={jobId:job.id,paidCalls:0,retryVersion:payload.retryVersion||0,priority:['reply','followup'].includes(job.kind),maxCost:payload.maxCost};
  try{
   requireProductReady(env);
   const s=await settings(env);let result;
@@ -50,7 +52,7 @@ export async function processJob(env:Env,job:Job){
   else if(['research','rewrite','followup','reply'].includes(job.kind)){
    const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',job.lead_id);if(!lead)throw new Error('Prospect not found');
    if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');
-   if(job.kind==='research'&&env.PRODUCT_ID&&!await admissionAvailable(env,s,lead.id)){
+   if(job.kind==='research'&&!await admissionAvailable(env,s,lead.id)){
     await run(env,"UPDATE jobs SET state='paused',error='Qualified email target reached for this UTC day',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
    }
    if(job.kind==='research'&&!await claimResearchBusiness(env,lead.id,s.dailyResearchLimit)){
@@ -79,7 +81,7 @@ export async function processAvailableJobs(env:Env,currentSettings?:Settings,man
  if(s.outreachPaused||s.prospectingPaused)return;
  // Each checkpoint invocation makes at most one paid call. The paid deployment
  // may advance up to three checkpoints per cycle; Free retains a one-step default.
- const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') AND (kind<>'discover_search' OR ?=0 OR json_extract(payload,'$.manual')=1) AND (?=0 OR json_extract(payload,'$.manual')=1) ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`,s.discoveryPaused?1:0,manualOnly?1:0);
+ const job=await one<Job>(env,`SELECT * FROM jobs WHERE state='pending' AND kind IN ('reply','followup','discover_search','rewrite','research') AND (kind<>'discover_search' OR ?=0 OR json_extract(payload,'$.manual')=1) AND (?=0 OR json_extract(payload,'$.manual')=1 OR kind IN ('reply','followup','rewrite')) ORDER BY CASE kind WHEN 'reply' THEN 0 WHEN 'followup' THEN 1 WHEN 'rewrite' THEN 2 WHEN 'discover_search' THEN 3 ELSE 4 END,CASE WHEN EXISTS(SELECT 1 FROM ai_attempts a WHERE a.job_id=jobs.id) THEN 0 ELSE 1 END,created_at,id LIMIT 1`,s.discoveryPaused?1:0,manualOnly?1:0);
  if(job){await processJob(env,job);return true;}return false;
 }
 export async function tick(env:Env){
@@ -95,27 +97,21 @@ export async function tick(env:Env){
   const inboxWork={processed:0};
   let inboxOk=false;if(env.GOOGLE_REFRESH_TOKEN){try{inboxOk=await syncInbox(env,inboxWork);}catch{await audit(env,'inbox_sync_failed',null,'Sending paused this cycle because inbox synchronization failed');}}
   if(s.outreachPaused||s.prospectingPaused)return {paused:true};
-  if(env.ENABLE_AUTOMATION==='true'&&s.researchAutomation!==false){
-   const backlog=await researchBacklog(env);
-   if(!s.discoveryPaused&&backlog<s.dailyNewLimit*3&&env.OPENAI_API_KEY)await startDiscovery(env,s);
-   // Legacy reconciliation is an explicit cutover operation, not a repeated
-   // scan of every old expense on each cron invocation.
-   await scheduleResearch(env);
-   await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
-    SELECT 'followup:'||id||':'||followup_count,'followup',id,'{}',?,? FROM leads
-    WHERE next_followup_at IS NOT NULL AND last_inbound_at IS NULL AND status='contacted' AND followup_count<?
-    AND NOT EXISTS(SELECT 1 FROM drafts WHERE lead_id=leads.id AND status IN ('pending','approved','sending','uncertain'))`,now(),now(),Math.min(3,s.followupDays.length));
-  }else await scheduleResearch(env,true);
-  // Finish the one campaign explicitly requested by the owner even if automatic
-  // campaigns are disabled. Completion never starts a second manual campaign.
-  if(env.PRODUCT_ID&&await manualCampaignPending(env))await startDiscovery(env,s,undefined,undefined,true,true);
+  // Cron advances only owner-requested campaigns and explicit email work.
+  // It never starts a recurring prospect search, regardless of legacy flags.
+  await scheduleResearch(env,true);
+  if(await manualCampaignPending(env,s))await startDiscovery(env,s,undefined,undefined,true,true);
+  if(env.ENABLE_AUTOMATION==='true')await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
+   SELECT 'followup:'||id||':'||followup_count,'followup',id,'{}',?,? FROM leads
+   WHERE next_followup_at IS NOT NULL AND last_inbound_at IS NULL AND status='contacted' AND followup_count<?
+   AND NOT EXISTS(SELECT 1 FROM drafts WHERE lead_id=leads.id AND status IN ('pending','approved','sending','uncertain'))`,now(),now(),Math.min(3,s.followupDays.length));
   const dispatchWork={processed:0};
   if(inboxOk)await sendApproved(env,s,undefined,dispatchWork);
   if(inboxWork.processed===0&&dispatchWork.processed===0){
    const stages=Math.min(3,Math.max(1,Math.floor(Number(env.AI_STAGES_PER_CYCLE)||1)));
    for(let step=0;step<stages;step++){
     if(step>0&&(await providerBlock(env)||await prospectingPaused(env)))break;
-    if(!await processAvailableJobs(env,s,s.researchAutomation===false))break;
+    if(!await processAvailableJobs(env,s,true))break;
    }
   }
   if(new Date().getUTCHours()>=3)await notifyDigest(env,s);
@@ -129,7 +125,8 @@ export async function tickWorkspaces(env:Env){
  // Isolated leases and ledgers allow all approved products to progress fairly.
  const products=await productList(env);
  await Promise.all(products.filter(p=>p.enabled).map(async p=>{
-  try{if(p.state==='analyzing'&&!await outreachPaused(env))await advanceProductAnalysis(env,p);else if(p.state==='approved'&&p.approved_revision===p.revision)await tick(await scopeProduct(env,p));}
+  try{if(p.state==='analyzing'&&!await outreachPaused(env))await advanceProductAnalysis(env,p);else if(p.state==='target_review'&&!await outreachPaused(env)){const {approveProduct}=await import('./products');await approveProduct(env,p.id,p.revision);}
+   else if(p.state==='approved'&&p.approved_revision===p.revision){await continueProductDiscovery(env,p);await tick(await scopeProduct(env,p));}}
   catch(e){await audit(env,'product_cycle_failed',p.id,e instanceof Error?e.message:'Product cycle failed');}
  }));
 }

@@ -16,21 +16,21 @@ const input={name:'FlangeFlow',website:'https://pumps.example.com',description:'
 async function approved(env:any,name=input.name){
  const p=await saveProduct(env,{...input,name});await queueProductAnalysis(env,p.id);
  for(let i=0;i<5;i++){const fresh=await product(env,p.id);if(fresh.state!=='analyzing')break;await advanceProductAnalysis(env,fresh);}
- const review=await product(env,p.id);assert.equal(review.state,'target_review');await approveProduct(env,p.id,review.revision);await run(await scopeProduct(env,await product(env,p.id)),"UPDATE settings SET data=json_set(data,'$.discoveryPaused',json('false'),'$.prospectingPaused',json('false'))");return product(env,p.id);
+ const review=await product(env,p.id);assert.equal(review.state,'approved');await approveProduct(env,p.id,review.revision);await run(await scopeProduct(env,await product(env,p.id)),"UPDATE settings SET data=json_set(data,'$.discoveryPaused',json('false'),'$.prospectingPaused',json('false'))");return product(env,p.id);
 }
 async function req(env:any,path:string,body?:any,cookie?:string){return worker.fetch(new Request('https://outreach.example.com'+path,{method:body===undefined?'GET':'POST',headers:{Origin:'https://outreach.example.com','X-Requested-With':'Prepyr',...(cookie?{Cookie:cookie}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),env,{waitUntil:()=>{}} as unknown as ExecutionContext);}
 async function login(env:any){const r=await req(env,'/api/login',{password:env.ADMIN_PASSWORD});return r.headers.get('set-cookie')!.split(';')[0];}
 
-test('product analysis uses screenshots and remarks, and no prospect search starts before profile approval',async()=>{
+test('product analysis uses screenshots and remarks, and profile is automatically applied before a requested prospect search',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch,{fetcher,calls}=mockOpenAI();globalThis.fetch=fetcher;
  try{
   const p=await saveProduct(env,{...input,images:[{name:'Product screen',data:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4XsAAAAASUVORK5CYII='}]});
-  let scoped=await scopeProduct(env,p);await assert.rejects(startDiscovery(scoped,await settings(scoped)),/Approve/);assert.equal(calls.length,0);
+  let scoped=await scopeProduct(env,p);await assert.rejects(startDiscovery(scoped,await settings(scoped)),/profile is not ready/i);assert.equal(calls.length,0);
   await queueProductAnalysis(env,p.id);await advanceProductAnalysis(env,await product(env,p.id));await advanceProductAnalysis(env,await product(env,p.id));
-  const review=await product(env,p.id);assert.equal(review.state,'target_review');assert.equal(calls.length,2);
+  const review=await product(env,p.id);assert.equal(review.state,'approved');assert.equal(calls.length,2);
   assert.ok(Array.isArray(calls[1].input));assert.equal(calls[1].input[0].content[1].type,'input_image');assert.ok(calls.every(c=>c.instructions.includes(input.remarks)));
   await assert.rejects(approveProduct(env,p.id,99),/current/);await approveProduct(env,p.id,review.revision);scoped=await scopeProduct(env,await product(env,p.id));
-  const s=await settings(scoped);assert.equal(s.dailyResearchLimit,20);assert.equal(s.dailyTotalLimit,12);assert.equal(s.openaiBudget,50);assert.equal(s.campaigns[0].query,'industrial pump flange suppliers');
+  const s=await settings(scoped);assert.equal(s.dailyResearchLimit,60);assert.equal(s.dailyTotalLimit,12);assert.equal(s.openaiBudget,50);assert.equal(s.campaigns[0].query,'industrial pump flange suppliers');
   assert.equal((await all(scoped,'SELECT * FROM messages')).length,0);assert.equal((await productDetail(env,p.id)).images.length,1);
  }finally{globalThis.fetch=original;close();}
 });
@@ -39,7 +39,7 @@ test('approved product discovers matching prospects and drafts its actual produc
  const {env,close}=database();Object.assign(env,{OPENAI_API_KEY:'fixture',ENABLE_AUTOMATION:'true'});const original=globalThis.fetch,{fetcher,calls}=mockOpenAI();globalThis.fetch=fetcher;
  try{
   const p=await approved(env),scope=await scopeProduct(env,p);
-  for(let step=0;step<13;step++)await tick(scope);
+  await startDiscovery(scope,await settings(scope));for(let step=0;step<13;step++)await tick(scope);
   const lead=await one<any>(scope,'SELECT * FROM leads'),draft=await one<any>(scope,'SELECT * FROM drafts');
   assert.ok(lead);assert.equal(lead.contact_status,'publicly_sourced');assert.equal(draft.quality_hold,'');assert.equal(draft.status,'pending');assert.equal(draft.approved_hash,null);assert.match(draft.body,/flange|pressure/i);
   assert.equal(JSON.parse(draft.free_offer).type,'product');assert.doesNotMatch(draft.body,/free|30.day|Adobe/i);
@@ -150,5 +150,5 @@ test('evidence formatting is normalized without accepting paraphrases and failed
  assert.equal(containsExcerpt('We offer **custom software development** for businesses.','We offer custom software development for businesses.'),true);
  assert.equal(containsExcerpt('We offer software support for businesses.','We offer custom software development for businesses.'),false);
  const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch,{fetcher,calls}=mockOpenAI({badEvidence:true});globalThis.fetch=fetcher;
- try{const p=await approved(env),scope=await scopeProduct(env,p);scope.ENABLE_AUTOMATION='true';for(let i=0;i<5;i++)await tick(scope);assert.equal((await all(scope,'SELECT id FROM leads')).length,1);const discovery=calls.filter(c=>c.text?.format?.name==='relay_discover_evidence_repair');assert.equal(discovery.length,1);assert.equal((await all(scope,"SELECT id FROM ai_attempts WHERE stage='discover_search'")).length,1);}finally{globalThis.fetch=original;close();}
+ try{const p=await approved(env),scope=await scopeProduct(env,p);scope.ENABLE_AUTOMATION='true';await startDiscovery(scope,await settings(scope));for(let i=0;i<5;i++)await tick(scope);assert.equal((await all(scope,'SELECT id FROM leads')).length,1);const discovery=calls.filter(c=>c.text?.format?.name==='relay_discover_evidence_repair');assert.equal(discovery.length,1);assert.equal((await all(scope,"SELECT id FROM ai_attempts WHERE stage='discover_search'")).length,1);}finally{globalThis.fetch=original;close();}
 });

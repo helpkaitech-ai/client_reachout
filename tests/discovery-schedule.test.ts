@@ -1,61 +1,71 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {database,readyLead,testSettings} from './helpers';
+import {database,testSettings} from './helpers';
 import {mockOpenAI} from './openai-fixture';
-import {all,one,run,settings} from '../src/db';
-import {defaults} from '../src/types';
-import {validateSettings} from '../src/policy';
+import {all,one,run,settings,now,day} from '../src/db';
 import {startDiscovery} from '../src/discovery';
-import {processAvailableJobs,scheduleResearch,tick} from '../src/engine';
-import {saveProduct,scopeProduct} from '../src/products';
-import worker from '../src/index';
+import {tick,tickWorkspaces} from '../src/engine';
+import {saveProduct,scopeProduct,product,requestProductDiscovery} from '../src/products';
 
-test('automatic discovery waits six days, while manual searches remain available after the explicit hold expires',async()=>{
- const {env,close}=database();env.OPENAI_API_KEY='test';
+test('cron never creates searches even when legacy automation and interval settings are enabled',async()=>{
+ const x=database();Object.assign(x.env,{OPENAI_API_KEY:'mock',ENABLE_AUTOMATION:'true'});
  try{
-  assert.equal(defaults.discoveryIntervalDays,6);
-  await startDiscovery(env,testSettings);await run(env,"UPDATE discovery_batches SET state='complete',created_at=?",new Date(Date.now()-5*86400000).toISOString());
-  assert.equal((await startDiscovery(env,testSettings)).state,'cooldown');
-  await run(env,"UPDATE discovery_batches SET created_at=?",new Date(Date.now()-6*86400000-1000).toISOString());
-  assert.equal((await startDiscovery(env,testSettings)).state,'queued');
-  await run(env,"UPDATE discovery_batches SET state='complete'");
-  assert.equal((await startDiscovery(env,{...testSettings,discoveryPausedUntil:new Date(Date.now()-1000).toISOString()},testSettings.campaigns[0],'manual')).state,'queued');
- }finally{close();}
+  await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,researchAutomation:true,discoveryPaused:false,discoveryIntervalDays:1}));
+  for(let i=0;i<4;i++)await tickWorkspaces(x.env);
+  assert.equal((await all(x.env,'SELECT * FROM jobs')).length,0);
+  assert.equal((await startDiscovery(x.env,await settings(x.env),undefined,undefined,false)).state,'manual_only');
+  assert.equal((await all(x.env,'SELECT * FROM discovery_batches')).length,0);
+ }finally{x.close();}
 });
 
-test('a timed automatic hold is bypassed by the authenticated manual discover API',async()=>{
- const {env,close}=database();env.OPENAI_API_KEY='test';const pausedUntil=new Date(Date.now()+3*86400000).toISOString();
+test('one product search request generates and applies its profile and then queues discovery without another click',async()=>{
+ const x=database(),original=globalThis.fetch,ai=mockOpenAI();Object.assign(x.env,{OPENAI_API_KEY:'mock',AI_STAGES_PER_CYCLE:'3'});globalThis.fetch=ai.fetcher;
  try{
-  const s={...testSettings,discoveryPausedUntil:pausedUntil};await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(s));
-  assert.equal((await startDiscovery(env,s)).state,'paused');assert.equal((await startDiscovery(env,s,s.campaigns[0],'manual')).state,'paused');
-  const origin=env.APP_URL!,headers={Origin:origin,'X-Requested-With':'Prepyr','Content-Type':'application/json'},ctx={waitUntil:()=>{}} as unknown as ExecutionContext;
-  const login=await worker.fetch(new Request(origin+'/api/login',{method:'POST',headers,body:JSON.stringify({password:env.ADMIN_PASSWORD})}),env,ctx);
-  const response=await worker.fetch(new Request(origin+'/api/discover',{method:'POST',headers:{...headers,Cookie:login.headers.get('set-cookie')!.split(';')[0]},body:'{}'}),env,ctx);
-  assert.equal(response.status,200);assert.equal((await response.json() as any).state,'queued');assert.equal((await settings(env)).discoveryPausedUntil,pausedUntil);
-  assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,1);assert.equal(JSON.parse((await one<any>(env,'SELECT payload FROM jobs'))!.payload).manual,true);
- }finally{close();}
+  const p=await saveProduct(x.env,{name:'Pump product',website:'https://pumps.example.com',description:'Quotation workflow product',sender_email:'data@prepyr.com'});
+  const scope=await scopeProduct(x.env,p);assert.equal((await settings(scope)).prospectingPaused,false);
+  assert.equal((await requestProductDiscovery(scope))?.state,'profiling');assert.equal(ai.calls.length,0);
+  for(let i=0;i<4;i++)await tickWorkspaces(x.env);
+  const fresh=await product(x.env,p.id);assert.equal(fresh.state,'approved');assert.equal(fresh.approved_revision,fresh.revision);
+  assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,1);
+  assert.equal(ai.calls.filter(c=>c.text?.format?.name==='relay_product_extract').length,1);
+  assert.equal((await all(scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=original;x.close();}
 });
 
-test('queued discovery defers until the hold ends and existing research continues without repeating completed paid stages',async()=>{
- const {env,close}=database();env.OPENAI_API_KEY='test';env.ENABLE_AUTOMATION='true';const original=globalThis.fetch,{fetcher,calls}=mockOpenAI();globalThis.fetch=fetcher;
+test('unfinished manual searches expire at the day boundary and cannot restart until another click',async()=>{
+ const x=database(),original=globalThis.fetch,ai=mockOpenAI();x.env.OPENAI_API_KEY='mock';globalThis.fetch=ai.fetcher;
  try{
-  await startDiscovery(env,testSettings);const pausedUntil=new Date(Date.now()+3*86400000).toISOString();
-  await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,discoveryPausedUntil:pausedUntil}));await readyLead(env);await scheduleResearch(env);
-  await processAvailableJobs(env);const job=await one<any>(env,"SELECT * FROM jobs WHERE kind='discover_search'");assert.equal(job.state,'paused');assert.equal(job.next_run_at,pausedUntil);assert.equal(calls.length,0);
-  for(let i=0;i<6;i++)await tick(env);
-  assert.equal((await all(env,'SELECT * FROM drafts')).length,1);assert.equal(calls.length,6);assert.equal((await all(env,'SELECT * FROM discovery_batches')).length,1);
-  assert.equal((await one<any>(env,"SELECT * FROM jobs WHERE kind='discover_search'")).state,'paused');assert.equal((await all(env,'SELECT * FROM messages')).length,0);
-  await run(env,"UPDATE settings SET data=json_set(data,'$.discoveryPausedUntil','')");await run(env,"UPDATE jobs SET next_run_at=? WHERE kind='discover_search'",new Date(Date.now()-1000).toISOString());
-  await tick(env);assert.equal(calls.length,7);assert.equal((await one<any>(env,"SELECT * FROM jobs WHERE kind='discover_search'")).state,'pending');
- }finally{globalThis.fetch=original;close();}
+  await startDiscovery(x.env,testSettings);
+  const yesterday=new Date(Date.parse(day()+'T00:00:00Z')-86400000).toISOString();
+  await run(x.env,'UPDATE discovery_cycles SET created_at=?',yesterday);
+  await run(x.env,'UPDATE discovery_batches SET created_at=?',yesterday);
+  await run(x.env,"UPDATE jobs SET created_at=?,payload=json_set(payload,'$.campaignDay',?)",yesterday,yesterday.slice(0,10));
+  for(let i=0;i<3;i++)await tick(x.env);
+  assert.equal(ai.calls.length,0);assert.equal((await one<any>(x.env,'SELECT state FROM jobs'))!.state,'cancelled');
+  assert.equal((await all(x.env,'SELECT * FROM discovery_batches')).length,1);
+  assert.equal((await startDiscovery(x.env,testSettings)).state,'queued');
+  assert.equal((await all(x.env,'SELECT * FROM discovery_cycles')).length,2);
+ }finally{globalThis.fetch=original;x.close();}
 });
 
-test('new product workspaces start paused independently of the Existing outreach hold and retain dedicated limits',async()=>{
- const {env,close}=database();try{
-  const pausedUntil=new Date(Date.now()+3*86400000).toISOString();await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify({...testSettings,discoveryPausedUntil:pausedUntil}));
-  const p=await saveProduct(env,{name:'Product',website:'https://pumps.example.com',description:'Quote management product',sender_email:'data@prepyr.com'}),scoped=await scopeProduct(env,p),s=await settings(scoped);
-  assert.equal(s.discoveryPausedUntil,'');assert.equal(s.prospectingPaused,true);assert.equal(s.discoveryIntervalDays,6);assert.equal(s.dailyResearchLimit,20);assert.equal(s.openaiBudget,50);
-  assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:'tomorrow'}),/Invalid discovery pause date/);
-  assert.throws(()=>validateSettings({...testSettings,discoveryPausedUntil:42} as any),/Invalid discovery pause date/);
- }finally{close();}
+test('new products retain independent targets and research capacity without a workspace pause',async()=>{
+ const x=database();try{
+  await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,prospectingPaused:true}));
+  const p=await saveProduct(x.env,{name:'Product',website:'https://pumps.example.com',description:'Quote product',sender_email:'data@prepyr.com'}),s=await settings(await scopeProduct(x.env,p));
+  assert.equal(s.prospectingPaused,false);assert.equal(s.discoveryPaused,true);assert.equal(s.dailyLeadLimit,12);assert.equal(s.dailyResearchLimit,60);
+  assert.equal((await settings(x.env)).prospectingPaused,true);
+ }finally{x.close();}
+});
+
+test('legacy automatic cycles cannot create replacement searches after recurring discovery is retired',async()=>{
+ const x=database();x.env.OPENAI_API_KEY='mock';
+ try{
+  await startDiscovery(x.env,testSettings);
+  await run(x.env,"UPDATE jobs SET payload=json_set(payload,'$.manual',json('false')),state='complete'");
+  await run(x.env,"UPDATE discovery_batches SET state='complete'");
+  await tick(x.env);await tick(x.env);
+  assert.equal((await all(x.env,'SELECT * FROM discovery_batches')).length,1);
+  assert.equal((await startDiscovery(x.env,testSettings)).state,'queued');
+  assert.equal((await all(x.env,'SELECT * FROM discovery_cycles')).length,2);
+ }finally{x.close();}
 });

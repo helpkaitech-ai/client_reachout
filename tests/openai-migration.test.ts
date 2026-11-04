@@ -97,7 +97,7 @@ test('additive migration preserves sent history, owner edits, suppressions, appr
 test('88 completed drafts never count as undrafted discovery backlog',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='test';env.ENABLE_AUTOMATION='true';const original=globalThis.fetch;globalThis.fetch=mockOpenAI().fetcher;
  try{await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));for(let i=0;i<88;i++){const l=await readyLead(env,{company:'Review '+i,email:`hello@review${i}.example.com`});const d=await readyDraft(env,l);await run(env,"UPDATE drafts SET status='pending' WHERE id=?",d.id);await run(env,"UPDATE leads SET status='review' WHERE id=?",l.id);}
- assert.equal(await researchBacklog(env),0);await tick(env);assert.equal((await all(env,'SELECT id FROM discovery_batches')).length,1);assert.equal((await all(env,"SELECT id FROM drafts WHERE status='pending'")).length,88);assert.equal((await all(env,'SELECT * FROM messages')).length,0);
+ assert.equal(await researchBacklog(env),0);await tick(env);assert.equal((await all(env,'SELECT id FROM discovery_batches')).length,0);assert.equal((await all(env,"SELECT id FROM drafts WHERE status='pending'")).length,88);assert.equal((await all(env,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=original;close();}
 });
 
@@ -115,7 +115,7 @@ test('the free-plan scheduled pipeline keeps D1 calls bounded across every resea
  const raw=env.DB;let count=0;const unwrap=new WeakMap<object,any>();
  function wrap(statement:any):any{const result={bind:(...args:any[])=>wrap(statement.bind(...args)),first:(...args:any[])=>{count++;return statement.first(...args);},all:()=>{count++;return statement.all();},run:()=>{count++;return statement.run();}};unwrap.set(result,statement);return result;}
  env.DB={prepare:(sql:string)=>wrap(raw.prepare(sql)),batch:async(items:any[])=>{count+=items.length;return raw.batch(items.map(x=>unwrap.get(x)||x));}} as unknown as D1Database;
- try{await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));await readyLead(env);await scheduleResearch(env);const counts=[];for(let i=0;i<12;i++){count=0;await tick(env);counts.push(count);}assert.ok(counts.every(n=>n<=50),JSON.stringify(counts));assert.equal((await all(env,'SELECT * FROM drafts')).length,1);}finally{globalThis.fetch=original;close();}
+ try{await run(env,'INSERT INTO settings(id,data) VALUES(1,?)',JSON.stringify(testSettings));const requested=await readyLead(env);await enqueue(env,'research',requested.id,{manual:true});const counts=[];for(let i=0;i<12;i++){count=0;await tick(env);counts.push(count);}assert.ok(counts.every(n=>n<=50),JSON.stringify(counts));assert.equal((await all(env,'SELECT * FROM drafts')).length,1);}finally{globalThis.fetch=original;close();}
 });
 
 test('unrelated inbox messages are examined once rather than rescanned every scheduler cycle',async()=>{

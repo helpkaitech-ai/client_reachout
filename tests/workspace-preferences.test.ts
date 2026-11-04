@@ -42,7 +42,7 @@ test('targeting changes invalidate stale approvals and preserve sent history, wh
   let response=await req(env,'/api/settings/preferences?product='+a.id,{...await settings(scope),openaiBudget:10,dailyResearchLimit:5,discoveryIntervalDays:8},cookie);assert.equal(response.status,200);assert.equal((await response.json() as any).profileChanged,false);assert.equal((await product(env,a.id)).state,'approved');
   const sentLead=await readyLead(scope,{company:'Sent',website:'https://sent.example.org',email:'sent@example.org'}),sent=await readyDraft(scope,sentLead);await run(scope,"UPDATE drafts SET status='sent' WHERE id=?",sent.id);
   response=await req(env,'/api/settings/preferences?product='+a.id,{...await settings(scope),customerTypes:['agencies'],customerDescription:'Video production agencies'},cookie);assert.equal(response.status,200);
-  const p=await product(env,a.id);assert.equal(p.state,'draft');assert.equal(p.revision,a.revision+1);assert.equal(p.approved_revision,null);assert.equal((await settings(scope)).prospectingPaused,true);
+  const p=await product(env,a.id);assert.equal(p.state,'draft');assert.equal(p.revision,a.revision+1);assert.equal(p.approved_revision,null);assert.equal((await settings(scope)).prospectingPaused,false);
   const held=await one<any>(scope,'SELECT * FROM drafts WHERE id=?',draft.id);assert.equal(held.body,draft.body);assert.equal(held.status,'pending');assert.equal(held.approved_hash,null);assert.match(held.quality_hold,/targeting/);assert.equal((await one<any>(scope,'SELECT status FROM drafts WHERE id=?',sent.id)).status,'sent');
   await assert.rejects(openai(scope,testSettings,'x','x','stale',{search:true,stage:'business_research',workflow:{jobId:'stale',paidCalls:0}}),/changed/);assert.equal((await product(env,b.id)).revision,b.revision);
  }finally{close();}
@@ -62,12 +62,12 @@ test('customer inputs on product creation are validated, exposed for editing and
  }finally{globalThis.fetch=original;close();}
 });
 
-test('product geography overrides retain OpenAI-derived topics, and each workspace obeys its own search interval',async()=>{
+test('product geography retains OpenAI-derived topics without a campaign interval',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='mock';try{
   const [a,b]=await pair(env),sa=await manualApprove(env,a.id),sb=await manualApprove(env,b.id),campaign={query:'AI-selected editing agencies',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true};
   for(const [scope,interval]of [[sa,9],[sb,2]] as const){await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,campaigns:[campaign],locationIds:['city:mumbai'],discoveryIntervalDays:interval,discoveryPaused:false,prospectingPaused:false}));const date=new Date(Date.now()-4*86400000).toISOString();await run(scope,"INSERT INTO discovery_batches(id,job_id,campaign,state,created_at,updated_at) VALUES('past','past',?,'complete',?,?)",JSON.stringify(campaign),date,date);await run(scope,"INSERT INTO discovery_cycles(id,created_at,completed_at,product_revision,target) VALUES('past',?,?,?,12)",date,date,scope.PRODUCT_REVISION);}
   const selected=nextProductCampaign(await settings(sa),[]);assert.equal(selected.country,'IN');assert.equal(selected.location,'Mumbai, India');assert.equal(selected.query,campaign.query);
-  assert.equal((await startDiscovery(sa,await settings(sa))).state,'cooldown');assert.equal((await startDiscovery(sb,await settings(sb))).state,'queued');assert.equal((await all(sa,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(sb,'SELECT * FROM ai_attempts')).length,0);
+  assert.equal((await startDiscovery(sa,await settings(sa))).state,'queued');assert.equal((await startDiscovery(sb,await settings(sb))).state,'queued');assert.equal((await all(sa,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(sb,'SELECT * FROM ai_attempts')).length,0);
  }finally{close();}
 });
 
@@ -95,13 +95,13 @@ test('actual Settings UI keeps the selected tab while switching products and sav
  const click=(selector:string)=>(doc.querySelector(selector) as HTMLElement).click();
  try{
   const [a,b]=await pair(env),cookie=await login(env);(dom.window as any).fetch=(path:string,init:any)=>{paths.push(path);return worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);};
-  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-discovery-control]'));click('[data-view="settings"]');await until(()=>!!doc.querySelector('#settings-form'));
+  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));click('[data-view="settings"]');await until(()=>!!doc.querySelector('#settings-form'));
   let select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Settings');
   for(const name of ['offerContext','portfolio','customerDescription','customerComments','senderEmail'])assert.ok(doc.querySelector('[name="'+name+'"]'));assert.ok(doc.querySelector('#locations-form'));
   const values={offerContext:'Video editing product for agencies',portfolio:'Portfolio A; $19/month',customerDescription:'Small editing studios',customerComments:'Exclude wedding venues'};
   for(const [key,value]of Object.entries(values))(doc.querySelector('#settings-form [name="'+key+'"]') as HTMLTextAreaElement).value=value;
   (doc.querySelector('#settings-form [name="customerTypes"][value="agencies"]') as HTMLInputElement).checked=true;
-  (doc.querySelector('#settings-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('analyze and approve'));
+  (doc.querySelector('#settings-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('profile'));
   const stored=await settings(await scopeProduct(env,await product(env,a.id)));assert.deepEqual(stored.customerTypes,['agencies']);assert.equal(stored.offerContext,values.offerContext);
   select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=b.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Settings');assert.equal((doc.querySelector('[name="offerContext"]') as HTMLTextAreaElement).value,b.description);assert.equal((doc.querySelector('[name="portfolio"]') as HTMLTextAreaElement).value,'');assert.equal(doc.querySelector('a[download]')!.getAttribute('href'),'/api/export?product='+b.id);
   click('[data-view="dashboard"]');await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Dashboard');select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Dashboard');assert.ok(paths.some(p=>p.includes('/api/settings/preferences?product='+a.id)));assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);
@@ -116,20 +116,20 @@ test('a delayed response from another workspace cannot replace the selected prod
  try{
   const [a,b]=await pair(env),cookie=await login(env);
   (dom.window as any).fetch=async(path:string,init:any)=>{if(path.includes('/api/dashboard?')&&path.includes('product='+a.id)){delayed=true;await gate;}return worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);};
-  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-discovery-control]'));(doc.querySelector('[data-view="settings"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#settings-form'));
+  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));(doc.querySelector('[data-view="settings"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#settings-form'));
   const select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>delayed);assert.equal(doc.querySelector('#settings-form'),null);
   select.value=b.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Settings');release();await new Promise(r=>setTimeout(r,60));assert.equal(doc.querySelector('#breadcrumb')!.textContent,'Product B / Settings');assert.equal((doc.querySelector('[name="offerContext"]') as HTMLTextAreaElement).value,b.description);
  }finally{release();dom.window.close();close();}
 });
 
-test('Find prospects with changed product locations requests profile review without queuing a search',async()=>{
+test('Find prospects with changed product locations queues automatic profile generation before searching',async()=>{
  const {env,close}=database(),base=env.APP_URL!,dom=new JSDOM(fs.readFileSync('public/index.html','utf8'),{url:base,runScripts:'outside-only'}),doc=dom.window.document,paths:string[]=[];env.OPENAI_API_KEY='mock';
  const until=async(fn:()=>boolean)=>{for(let i=0;i<150;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Location change UI timed out');};
  try{
   const [a]=await pair(env);await manualApprove(env,a.id);await controlProductProspecting(env,a.id,false);const cookie=await login(env);
   (dom.window as any).fetch=(path:string,init:any)=>{paths.push(path);return worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);};
-  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-discovery-control]'));const select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Prospects');
-  const city=doc.querySelector('[name="locationIds"][value="city:mumbai"]') as HTMLInputElement;city.checked=true;city.dispatchEvent(new dom.window.Event('change',{bubbles:true}));(doc.querySelector('[data-action="discover"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('analyze and approve'));
-  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),false);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,true);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
+  dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));const select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Prospects');
+  const city=doc.querySelector('[name="locationIds"][value="city:mumbai"]') as HTMLInputElement;city.checked=true;city.dispatchEvent(new dom.window.Event('change',{bubbles:true}));(doc.querySelector('[data-action="discover"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('profile'));
+  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),true);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,false);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
  }finally{dom.window.close();close();}
 });

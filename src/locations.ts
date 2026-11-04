@@ -37,7 +37,7 @@ const rows=[
  ['johannesburg','Johannesburg, South Africa','ZA','South Africa','Africa','Africa/Johannesburg'],
 ];
 export const places:Place[]=rows.map(([id,label,country,countryName,region,timezone])=>({id:'city:'+id,label,country,countryName,region,timezone}));
-export const locationOptions=[{id:'worldwide',label:'Worldwide — automatic',group:'Automatic'},
+export const locationOptions=[{id:'worldwide',label:'Worldwide — varied locations',group:'Worldwide'},
  ...[...new Set(places.map(p=>p.region))].map(region=>({id:'region:'+region,label:region,group:'Regions'})),
  ...[...new Map(places.map(p=>[p.country,p.countryName])).entries()].map(([code,name])=>({id:'country:'+code,label:name,group:'Countries'})),
  ...places.map(p=>({id:p.id,label:p.label,group:'Cities'}))];
@@ -64,7 +64,7 @@ export function manualSearchPlan(s:Settings,history:SearchHistory[]):Campaign[]{
  return chosen;
 }
 export function nextProductCampaign(s:Settings,history:SearchHistory[]):Campaign{
- const choices=s.campaigns.filter(c=>c.enabled);if(!choices.length)throw new Error('Approve a customer profile with enabled search scopes first');
+ const choices=s.campaigns.filter(c=>c.enabled);if(!choices.length)throw new Error('Generate a customer profile with enabled search scopes first');
  const count=history.reduce((n,h)=>n+Number(h.uses),0),query=choices[count%choices.length].query;
  const ids=validateLocations(s.locationIds||['worldwide']);
  if(ids.includes('worldwide'))return choices[count%choices.length];

@@ -34,11 +34,11 @@ export async function rejectCandidate(env:Env,lead:Lead,jobId:string,reason:stri
  await audit(env,'candidate_not_qualified',lead.id,reason);
 }
 export async function qualifiedToday(env:Env){
- return (await one<{n:number}>(env,`SELECT COUNT(*) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id WHERE q.admitted_at>=? AND d.kind='initial' AND ${readyDraftSql(!!env.PRODUCT_ID)}`,day()+'T00:00:00.000Z'))?.n||0;
+ return (await one<{n:number}>(env,`SELECT COUNT(DISTINCT lower(l.email)) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id WHERE q.admitted_at>=? AND d.kind='initial' AND ${readyDraftSql(!!env.PRODUCT_ID)}`,day()+'T00:00:00.000Z'))?.n||0;
 }
 export async function admissionAvailable(env:Env,s:Settings,leadId:string){
  if(await one(env,'SELECT lead_id FROM qualified_prospects WHERE lead_id=?',leadId))return true;
- return await qualifiedToday(env)<Math.min(s.dailyLeadLimit,s.dailyNewLimit);
+ return await qualifiedToday(env)<s.dailyLeadLimit;
 }
 export async function recordAdmission(env:Env,leadId:string,draftId:string){
  await run(env,'INSERT OR IGNORE INTO qualified_prospects(lead_id,draft_id,admitted_at) VALUES(?,?,?)',leadId,draftId,now());

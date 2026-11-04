@@ -1,6 +1,6 @@
 import type {Env,Product,Settings,Job} from './types';
 import {defaults} from './types';
-import {all,one,run,settings,now,uid,enqueue,audit,BudgetPaused} from './db';
+import {all,one,run,settings,now,day,uid,enqueue,audit,BudgetPaused} from './db';
 import {productDatabase} from './product-store';
 import {cleanEmail,publicUrl,validTimezone,validateSettings} from './policy';
 import {openai,outputText,UncertainProviderError} from './providers';
@@ -20,7 +20,7 @@ export async function scopeProduct(root:Env,p:Product):Promise<Env>{
  const env={...root,DB:db,GLOBAL_DB:root.GLOBAL_DB||root.DB,PRODUCT_ID:p.id,PRODUCT_NAME:p.name,PRODUCT_BRIEF:brief,PRODUCT_APPROVED:approved,PRODUCT_REVISION:p.revision,SENDER_EMAIL:p.sender_email,WORKSPACE_BACKUP:undefined};
  const base=await settings(root);
  env.OUTREACH_PAUSED=base.outreachPaused===true;
- await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:true,prospectingPaused:true,discoveryPaused:true,campaigns:[],offerContext:p.description}));
+ await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,prospectingPaused:false,discoveryPaused:true,campaigns:[],offerContext:p.description}));
  const local=await settings(env);
  // Older releases stored an internal product brief in the editable offer field.
  // Convert only that recognized generated shape; preserve owner-authored offers.
@@ -29,7 +29,7 @@ export async function scopeProduct(root:Env,p:Product):Promise<Env>{
  await run(env,"INSERT OR IGNORE INTO integration_state(key,value) VALUES('inbox_cursor',?)",JSON.stringify({after:Math.floor(Date.parse(p.created_at)/1000)-120,before:0,page:''}));
  return env;
 }
-export function requireProductReady(env:Env){if(env.PRODUCT_ID&&!env.PRODUCT_APPROVED)throw new Error('Approve the current OpenAI target profile and enable this product before searching, generating drafts or sending.');}
+export function requireProductReady(env:Env){if(env.PRODUCT_ID&&!env.PRODUCT_APPROVED)throw new Error('The product profile is not ready. Find prospects generates and applies it automatically before searching.');}
 export async function assertProductCurrent(env:Env){
  if(!env.PRODUCT_ID)return;
  requireProductReady(env);
@@ -58,12 +58,38 @@ export async function saveProduct(env:Env,input:any,id?:string){
   if(!changed.meta.changes)throw new Error('Product changed; reload before saving');
  }else await run(env,'INSERT INTO products(id,name,website,description,remarks,sender_email,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',key,name,website,description,remarks,sender,at,at);
  const p=await product(env,key),scoped=await scopeProduct(env,p),local=await settings(scoped);
- const preferences={...local,...customerInput,offerContext:!old||local.offerContext===old.description?description:local.offerContext,prospectingPaused:true,discoveryPaused:true};
- const ops=[scoped.DB.prepare('UPDATE settings SET data=? WHERE id=1').bind(JSON.stringify(preferences)),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; approve the new target profile and review or improve this draft',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
+ const preferences={...local,...customerInput,offerContext:!old||local.offerContext===old.description?description:local.offerContext,prospectingPaused:false,discoveryPaused:true};
+ const ops=[scoped.DB.prepare('UPDATE settings SET data=? WHERE id=1').bind(JSON.stringify(preferences)),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; review or improve this draft against the refreshed profile',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
+ ops.push(scoped.DB.prepare("DELETE FROM integration_state WHERE key='manual_search_request'"));
  if(images){ops.push(scoped.DB.prepare('DELETE FROM product_assets'));for(const image of images)ops.push(scoped.DB.prepare('INSERT INTO product_assets VALUES(?,?,?)').bind(image.id,image.name,image.data));}
- await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; target approval required');return p;
+ await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; the next search generates and applies its profile automatically');return p;
 }
 export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,prospecting_paused:s.prospectingPaused===true,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
+export async function requestProductDiscovery(env:Env){
+ if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
+ const root={...env,DB:env.GLOBAL_DB!},p=await product(root,env.PRODUCT_ID!);
+ await assertOutreachRunning(root);await assertProviderAvailable(env);
+ if(!p.enabled)throw new Error('Enable this product before finding prospects');
+ const scope=await scopeProduct(root,p);
+ await controlProspecting(scope,false);
+ await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({revision:p.revision,day:day()}));
+ if(p.state==='target_review'){await approveProduct(root,p.id,p.revision);return continueProductDiscovery(root,await product(root,p.id));}
+ if(p.state==='approved'&&p.approved_revision===p.revision)return continueProductDiscovery(root,p);
+ await queueProductAnalysis(root,p.id);
+ return {state:'profiling',message:'Generating and applying the product profile automatically. Your requested prospect search will then continue in the background; no profile approval is needed.'};
+}
+export async function continueProductDiscovery(root:Env,p:Product){
+ const scope=await scopeProduct(root,p),row=await one<{value:string}>(scope,"SELECT value FROM integration_state WHERE key='manual_search_request'");
+ if(!row)return;
+ const request=JSON.parse(row.value);
+ if(request.revision!==p.revision||request.day!==day()){
+  await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");return;
+ }
+ const {startDiscovery}=await import('./discovery');
+ const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true);
+ if(['queued','running','researching','daily_target'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");
+ return result;
+}
 export async function controlProductProspecting(env:Env,id:string,paused:boolean){
  if(typeof paused!=='boolean')throw new Error('Choose whether prospecting is paused');
  const p=await product(env,id);
@@ -88,13 +114,13 @@ export async function queueProductAnalysis(env:Env,id:string,confirmRetry=false)
  const p=await product(env,id),scope=await scopeProduct(env,p),jobId=`product-profile:${p.id}:${p.revision}`;
  const prior=await one<any>(scope,'SELECT * FROM jobs WHERE id=?',jobId);
  if(prior?.state==='uncertain')throw new Error('The previous request has an unknown outcome. Reconcile its provider charge before retrying');
- if(prior?.state==='complete')return {message:'Current analysis is ready for target-profile approval'};
+ if(prior?.state==='complete')return {message:'Current product profile is ready'};
  if(prior&&['failed','paused_provider'].includes(prior.state)){
   if(!confirmRetry)throw new Error('Confirm the new paid extraction attempt before retrying');
   const payload=JSON.parse(prior.payload);payload.retryVersion=(payload.retryVersion||0)+1;await run(scope,"UPDATE jobs SET state='pending',error=NULL,payload=?,updated_at=? WHERE id=?",JSON.stringify(payload),now(),jobId);
  }else await enqueue(scope,'product_analysis',null,{revision:p.revision},jobId);
  await run(env,"UPDATE products SET state='analyzing',error=NULL,updated_at=? WHERE id=? AND revision=?",now(),id,p.revision);
- return {message:'OpenAI product research queued. You will review the target profile before searches begin.'};
+ return {message:'Product profile generation queued. It will be applied automatically.'};
 }
 const campaignSchema=objectSchema({query:str,location:str,country:str,timezone:str,enabled:{type:'boolean'}});
 const profileSchema=objectSchema({productSummary:str,valueProposition:str,targetCustomers:{type:'array',items:str},buyingRoles:{type:'array',items:str},targetingRationale:str,qualificationCriteria:{type:'array',items:str},exclusions:{type:'array',items:str},remarksApplied:{type:'array',items:str},emailGuidance:str,unknowns:{type:'array',items:str},sources:{type:'array',items:objectSchema({url:str,observation:str})},campaigns:{type:'array',minItems:1,maxItems:6,items:campaignSchema}});
@@ -106,11 +132,13 @@ export async function advanceProductAnalysis(root:Env,p:Product){
  try{
   const s=await settings(env),assets=await all<any>(env,'SELECT data FROM product_assets ORDER BY id');
   const report=await openai(env,s,JSON.stringify({website:p.website,description:p.description,remarks:p.remarks}),`${researchSecurity} Research this PRODUCT and its official website, services, capabilities, pricing where public, documented use cases and intended buyers. Consider supplied owner remarks as targeting guidance, never as proof of a feature or customer result. Establish observed facts versus uncertainty. Find relevant product pages and corroboration. Do not use a fixed industry, company size, geography or solution template. Target customers must follow from this actual product. Do not discover prospect businesses yet.`,jobId,{search:true,workflow:w,stage:'product_search',maxOutput:3000,maxTools:4});
-  const result=await openai(env,s,JSON.stringify({product:p,report:outputText(report),sources:collectSources(report)}),`${researchSecurity} Understand the supplied product and screenshots and propose a target-customer profile FOR OWNER APPROVAL. Derive buyer types, buying roles, inclusion/exclusion criteria, geographic search campaigns and email guidance from the product, web research and owner remarks. No standard industry or SMB restriction. Screenshots show interface/features, not proof of customer outcomes. Preserve every relevant remark and workspace customer type, description and targeting comment in remarksApplied and in targeting/email guidance. Honor selected locations, the configured offer and portfolio/pricing. B2C describes the product market; research public organizations or professional channels rather than private consumers profiled by sensitive conditions. Explain any targeting limitations in unknowns before owner approval. Separate unknowns. Campaigns must use ISO two-letter countries, a specific city/country location and real IANA timezone; provide up to six diversified, evidence-led search scopes. Source URLs must be in the supplied research. Never invent capabilities, deployments, customers or results.`,jobId+':extract',{schema:profileSchema,workflow:w,stage:'product_extract',images:assets.map(a=>a.data),maxOutput:4500});
+  const result=await openai(env,s,JSON.stringify({product:p,report:outputText(report),sources:collectSources(report)}),`${researchSecurity} Understand the supplied product and screenshots and create a target-customer profile to apply automatically. Derive buyer types, buying roles, inclusion/exclusion criteria, geographic search campaigns and email guidance from the product, web research and owner remarks. No standard industry or SMB restriction. Screenshots show interface/features, not proof of customer outcomes. Preserve every relevant remark and workspace customer type, description and targeting comment in remarksApplied and in targeting/email guidance. Honor selected locations, the configured offer and portfolio/pricing. B2C describes the product market; research public organizations or professional channels rather than private consumers profiled by sensitive conditions. Explain any targeting limitations in unknowns in the generated profile. Separate unknowns. Campaigns must use ISO two-letter countries, a specific city/country location and real IANA timezone; provide up to six diversified, evidence-led search scopes. Source URLs must be in the supplied research. Never invent capabilities, deployments, customers or results.`,jobId+':extract',{schema:profileSchema,workflow:w,stage:'product_extract',images:assets.map(a=>a.data),maxOutput:4500});
   const analysis=JSON.parse(outputText(result));
   if(!analysis.productSummary||!analysis.targetingRationale||!Array.isArray(analysis.campaigns)||!analysis.campaigns.length||analysis.campaigns.some((c:any)=>!c.query?.trim()||!c.location?.trim()||!/^[A-Z]{2}$/.test(c.country)||!validTimezone(c.timezone)))throw new Error('OpenAI target profile has incomplete or invalid search scopes; review product remarks and retry extraction');
   const listed=new Set(collectSources(report).map(s=>s.url));analysis.sources=analysis.sources.filter((s:any)=>listed.has(s.url));
-  await run(root,"UPDATE products SET analysis=?,state='target_review',error=NULL,updated_at=? WHERE id=? AND revision=? AND state='analyzing'",JSON.stringify(analysis),now(),p.id,p.revision);
+  const saved=await run(root,"UPDATE products SET analysis=?,state='target_review',error=NULL,updated_at=? WHERE id=? AND revision=? AND state='analyzing'",JSON.stringify(analysis),now(),p.id,p.revision);
+  if(!saved.meta.changes)return;
+  await approveProduct(root,p.id,p.revision);
   await run(env,"UPDATE jobs SET state='complete',error=NULL,updated_at=? WHERE id=?",now(),jobId);
  }catch(e){
   const error=e instanceof Error?e.message:'Product research failed';
@@ -122,9 +150,9 @@ export async function advanceProductAnalysis(root:Env,p:Product){
  }
 }
 export async function approveProduct(env:Env,id:string,revision:number){
- const p=await product(env,id);if(p.revision!==revision||p.state!=='target_review')throw new Error('Review the current OpenAI target profile before approval');
+ const p=await product(env,id);if(p.revision===revision&&p.state==='approved'&&p.approved_revision===revision)return {ok:true};if(p.revision!==revision||p.state!=='target_review')throw new Error('Review the current OpenAI target profile before approval');
  const analysis=JSON.parse(p.analysis),scope=await scopeProduct(env,p),s=await settings(scope);
  await run(scope,'UPDATE settings SET data=? WHERE id=1',JSON.stringify({...s,campaigns:analysis.campaigns}));
  const changed=await run(env,"UPDATE products SET state='approved',approved_revision=revision,error=NULL,updated_at=? WHERE id=? AND revision=? AND state='target_review'",now(),id,revision);if(!changed.meta.changes)throw new Error('Product changed before approval');
- await audit(env,'product_target_approved',id,'Owner approved the current OpenAI target profile; no email approved');return {ok:true};
+ await audit(env,'product_target_approved',id,'Generated product profile applied automatically; no email approved');return {ok:true};
 }

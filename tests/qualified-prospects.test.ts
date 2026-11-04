@@ -123,41 +123,41 @@ test('replacement discovery bypasses the interval inside an unfinished cycle and
   await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");
   await claimResearchBusiness(x.scope,'attempt1',2);await claimResearchBusiness(x.scope,'attempt2',2);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'research_limit');
   await run(x.scope,'DELETE FROM research_claims');
-  for(let i=0;i<2;i++){assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");}
+  for(let i=0;i<4;i++){assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");}
   assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'search_limit');
  }finally{x.close();}
 });
 
-test('twelve distinct qualified prospects complete a cycle; rejected candidates do not advance it and the six-day gap stays enforced',async()=>{
+test('twelve distinct qualified prospects complete a cycle; rejected candidates do not advance it and the next day requires a new explicit request',async()=>{
  const x=await setup();try{
   await startDiscovery(x.scope,await settings(x.scope));const batch=(await one<any>(x.scope,'SELECT id FROM discovery_batches'))!.id;
   await run(x.scope,"UPDATE discovery_batches SET state='complete'");await run(x.scope,"UPDATE jobs SET state='complete'");
   for(let i=0;i<12;i++){const q=await eligible(x.scope,'Good '+i,'good'+i+'@example.org');await recordAdmission(x.scope,q.lead.id,q.draft.id);await run(x.scope,"INSERT INTO discovery_candidates(id,batch_id,entity_key,data,outcome,lead_id,created_at) VALUES(?,?,?,'{}','imported',?,?)",'c'+i,batch,'k'+i,q.lead.id,now());}
-  assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'cooldown');assert.equal(await qualifiedToday(x.scope),12);assert.equal((await prospectPage(x.scope,page)).total,12);
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'daily_target');assert.equal(await qualifiedToday(x.scope),12);assert.equal((await prospectPage(x.scope,page)).total,12);
   assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'daily_target');
   assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);assert.ok((await one<any>(x.scope,'SELECT completed_at FROM discovery_cycles'))!.completed_at);
   await run(x.scope,"UPDATE discovery_cycles SET completed_at=?",new Date(Date.now()-7*86400000).toISOString());assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'daily_target');
-  await run(x.scope,'UPDATE qualified_prospects SET admitted_at=?',new Date(Date.now()-86400000).toISOString());assert.equal(await qualifiedToday(x.scope),0);assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).qualified,12);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');
+  await run(x.scope,'UPDATE qualified_prospects SET admitted_at=?',new Date(Date.now()-86400000).toISOString());assert.equal(await qualifiedToday(x.scope),0);assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).qualified,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');
  }finally{x.close();}
 });
 
 test('a paused workspace cannot create replacement searches or incur provider work',async()=>{
  const x=await setup({prospectingPaused:true,discoveryPaused:true}),original=globalThis.fetch;let calls=0;globalThis.fetch=(async()=>{calls++;throw Error('No live provider allowed');}) as typeof fetch;
- try{await tick(x.scope);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'paused');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,0);assert.equal(calls,0);}finally{globalThis.fetch=original;x.close();}
+ try{await tick(x.scope);await assert.rejects(startDiscovery(x.scope,await settings(x.scope)),/paused/i);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,0);assert.equal(calls,0);}finally{globalThis.fetch=original;x.close();}
 });
 
-for(const automatic of [true,false])test('an '+(automatic?'automatic':'explicit manual')+' campaign replaces four rejected candidates with twelve distinct fully drafted prospects without sending',async()=>{
- const x=await setup(automatic?{}:{researchAutomation:false,discoveryPaused:true}),original=globalThis.fetch,ai=mockOpenAI();let batch=0;
+for(const {automatic,rejectedBatches} of [{automatic:true,rejectedBatches:1},{automatic:false,rejectedBatches:1},{automatic:false,rejectedBatches:7}])test('an explicitly requested campaign with legacy automation '+automatic+' replaces '+rejectedBatches*4+' rejected candidates with twelve distinct fully drafted prospects without sending',async()=>{
+ const x=await setup({researchAutomation:automatic,discoveryPaused:!automatic}),original=globalThis.fetch,ai=mockOpenAI();let batch=0;
  const address=(company:string)=>'team@'+company.toLowerCase().replace(/\s/g,'')+'.example.org';
  globalThis.fetch=(async(url:any,init:any)=>{
   const request=JSON.parse(init.body),input=JSON.parse(request.input),response=await ai.fetcher(url,init),data:any=await response.json(),last=data.output.at(-1).content[0],stage=request.text?.format.name?.replace('relay_','')||'';
   if(request.tools){
-   if(input.campaign){batch++;last.text+='\nDirectory profiles: '+Array.from({length:4},(_,i)=>batch===1?'Rejected '+i:'Qualified '+((batch-2)*4+i)).join(', ');}
+   if(input.campaign){batch++;last.text+='\nDirectory profiles: '+Array.from({length:4},(_,i)=>batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i)).join(', ');}
    const company=input.company||input.business?.company;
    if(company)last.text=last.text.replaceAll('buyer@pumps.example.com',address(company));
   }else{
    const out=JSON.parse(last.text);
-   if(stage==='discover_extract'){const template=out.candidates[0];out.candidates=Array.from({length:4},(_,i)=>{const company=batch===1?'Rejected '+i:'Qualified '+((batch-2)*4+i);return {...template,company,website:'https://'+address(company).split('@')[1]};});}
+   if(stage==='discover_extract'){const template=out.candidates[0];out.candidates=Array.from({length:4},(_,i)=>{const company=batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i);return {...template,company,website:'https://'+address(company).split('@')[1]};});}
    if(stage.startsWith('contact_')){const email=input.report.match(/team@[a-z0-9.]+\.example\.org/)?.[0];if(email){out.email=email;out.excerpt='For pump enquiries email '+email;}}
    if(stage==='solution_design'&&input.business.startsWith('Rejected')){out.qualified=false;out.qualificationReason='Original source did not establish the approved workflow';}
    last.text=JSON.stringify(out);
@@ -165,12 +165,24 @@ for(const automatic of [true,false])test('an '+(automatic?'automatic':'explicit 
   return Response.json(data);
  }) as typeof fetch;
  try{
-  if(!automatic)assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'queued');
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'queued');
   for(let i=0;i<180;i++){await tick(x.scope);if(await qualifiedToday(x.scope)===12)break;}
   assert.equal(await qualifiedToday(x.scope),12);const result:any=await prospectPage(x.scope,page);assert.equal(result.total,12);assert.equal(new Set(result.rows.map((l:any)=>l.email)).size,12);assert.equal(result.counts.attention,0);
-  assert.equal((await all(x.scope,"SELECT * FROM leads WHERE status='not_qualified'")).length,4);assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,12);
-  assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,4);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
-  assert.equal((await all(x.scope,'SELECT * FROM research_claims')).length,16);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
-  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,!automatic)).state,automatic?'cooldown':'daily_target');
+  assert.equal((await all(x.scope,"SELECT * FROM leads WHERE status='not_qualified'")).length,rejectedBatches*4);assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,12);
+  assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,rejectedBatches+3);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
+  assert.equal((await all(x.scope,'SELECT * FROM research_claims')).length,rejectedBatches*4+12);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'daily_target');
  }finally{globalThis.fetch=original;x.close();}
+});
+
+test('the qualified prospect target stays independent of a lower daily sending cap',async()=>{
+ const x=await setup({dailyLeadLimit:12,dailyNewLimit:1});try{
+  for(let i=0;i<12;i++){
+   assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'next-'+i),true);
+   const q=await eligible(x.scope,'Distinct '+i,'distinct'+i+'@example.org');
+   await recordAdmission(x.scope,q.lead.id,q.draft.id);
+  }
+  assert.equal(await qualifiedToday(x.scope),12);
+  assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'thirteenth'),false);
+ }finally{x.close();}
 });
