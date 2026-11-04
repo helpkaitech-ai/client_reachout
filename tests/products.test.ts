@@ -27,7 +27,7 @@ test('product analysis uses screenshots and remarks, and profile is automaticall
   const p=await saveProduct(env,{...input,images:[{name:'Product screen',data:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4XsAAAAASUVORK5CYII='}]});
   let scoped=await scopeProduct(env,p);await assert.rejects(startDiscovery(scoped,await settings(scoped)),/profile is not ready/i);assert.equal(calls.length,0);
   await queueProductAnalysis(env,p.id);await advanceProductAnalysis(env,await product(env,p.id));await advanceProductAnalysis(env,await product(env,p.id));
-  const review=await product(env,p.id);assert.equal(review.state,'approved');assert.equal(calls.length,2);
+  const review=await product(env,p.id);assert.equal(review.state,'approved');assert.equal(calls.length,2);assert.ok(calls[1].instructions.includes('Apply the same qualification standard'));assert.ok(calls[1].instructions.includes('Buying willingness, authority, budget and internal CSV/Excel file formats are unknown'));
   assert.ok(Array.isArray(calls[1].input));assert.equal(calls[1].input[0].content[1].type,'input_image');assert.ok(calls.every(c=>c.instructions.includes(input.remarks)));
   await assert.rejects(approveProduct(env,p.id,99),/current/);await approveProduct(env,p.id,review.revision);scoped=await scopeProduct(env,await product(env,p.id));
   const s=await settings(scoped);assert.equal(s.dailyResearchLimit,60);assert.equal(s.dailyTotalLimit,12);assert.equal(s.openaiBudget,50);assert.equal(s.campaigns[0].query,'industrial pump flange suppliers');

@@ -17,7 +17,7 @@ async function setup(extra:any={}){
  const p=await saveProduct(db.env,{name:'Reporting product',website:'https://product.example.com',description:'Review prepared spreadsheet exports and reports',sender_email:'data@prepyr.com'});
  await run(db.env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",p.id);
  const scope=await scopeProduct(db.env,await product(db.env,p.id));
- await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,campaigns:[{query:'recurring reporting professionals',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}],...extra}));
+ await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,locationIds:['city:london'],campaigns:[{query:'recurring reporting professionals',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}],...extra}));
  return {...db,scope,p};
 }
 async function eligible(scope:any,company='Ready Company',email='ready@example.org'){

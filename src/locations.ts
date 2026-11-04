@@ -67,10 +67,10 @@ export function nextProductCampaign(s:Settings,history:SearchHistory[]):Campaign
  const choices=s.campaigns.filter(c=>c.enabled);if(!choices.length)throw new Error('Generate a customer profile with enabled search scopes first');
  const count=history.reduce((n,h)=>n+Number(h.uses),0),query=choices[count%choices.length].query;
  const ids=validateLocations(s.locationIds||['worldwide']);
- if(ids.includes('worldwide'))return choices[count%choices.length];
  const places=expandLocations(ids).sort((a,b)=>{
   const usage=(p:Place)=>history.filter(h=>h.location===p.label).reduce((n,h)=>n+Number(h.uses),0);
-  return usage(a)-usage(b);
+  const countryUsage=(p:Place)=>history.filter(h=>h.country===p.country).reduce((n,h)=>n+Number(h.uses),0);
+  return countryUsage(a)-countryUsage(b)||usage(a)-usage(b);
  });
  const p=places[0];if(!p)throw new Error('Select a valid product search location');
  // The query is always OpenAI-derived; owner locations only constrain geography.
