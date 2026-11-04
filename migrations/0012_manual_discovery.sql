@@ -1,5 +1,8 @@
 -- Explicit searches replace all recurring discovery schedules. Preserve inbox,
--- conversation history, provider billing holds and per-email send approvals.
+-- conversation history and provider billing holds. Unpausing must not dispatch
+-- older approved emails: require a fresh Send action, preserving their text.
+UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL,approved_at=NULL
+ WHERE status='approved';
 UPDATE settings SET data=json_set(data,
  '$.outreachPaused',json('false'),'$.prospectingPaused',json('false'),
  '$.discoveryPaused',json('true'),'$.researchAutomation',json('false'),

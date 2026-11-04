@@ -69,3 +69,19 @@ test('legacy automatic cycles cannot create replacement searches after recurring
   assert.equal((await all(x.env,'SELECT * FROM discovery_cycles')).length,2);
  }finally{x.close();}
 });
+
+test('manual-mode migration unpauses research without dispatching older email approvals or losing history',async()=>{
+ const x=database();try{
+  const {readFileSync}=await import('node:fs');
+  const {readyLead,readyDraft}=await import('./helpers');
+  const draft=await readyDraft(x.env,await readyLead(x.env));
+  const sent=await readyDraft(x.env,await readyLead(x.env,{company:'Sent history',email:'sent@example.org'}));
+  await run(x.env,"UPDATE drafts SET status='sent' WHERE id=?",sent.id);
+  await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true,prospectingPaused:true,dailyResearchLimit:20,openaiBudget:7}));
+  x.sqlite.exec(readFileSync('migrations/0012_manual_discovery.sql','utf8'));
+  const s=await settings(x.env);assert.equal(s.outreachPaused,false);assert.equal(s.prospectingPaused,false);assert.equal(s.dailyResearchLimit,60);assert.equal(s.openaiBudget,7);
+  const updated=await one<any>(x.env,'SELECT * FROM drafts WHERE id=?',draft.id);
+  assert.equal(updated.status,'pending');assert.equal(updated.approved_hash,null);assert.equal(updated.body,draft.body);
+  assert.equal((await one<any>(x.env,'SELECT status FROM drafts WHERE id=?',sent.id))!.status,'sent');
+ }finally{x.close();}
+});
