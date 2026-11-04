@@ -7,7 +7,7 @@ import {tick,processAvailableJobs,scheduleResearch} from '../src/engine';
 import {startDiscovery} from '../src/discovery';
 import {qualifiedToday,backfillAdmissions,recordAdmission,admissionAvailable} from '../src/qualified-prospects';
 import {prospectPage} from '../src/prospects';
-import {mockOpenAI,sourceUrls,businessReport} from './openai-fixture';
+import {fixtureUseCase,mockOpenAI,sourceUrls,businessReport} from './openai-fixture';
 import {discoveryProgress} from '../src/discovery-cycles';
 import {prepareInitialContact} from '../src/intelligence';
 
@@ -15,7 +15,7 @@ const page=new URL('https://outreach.example.com/api/prospects');
 async function setup(extra:any={}){
  const db=database();Object.assign(db.env,{OPENAI_API_KEY:'mock',ENABLE_AUTOMATION:'true',AI_STAGES_PER_CYCLE:'3'});
  const p=await saveProduct(db.env,{name:'Reporting product',website:'https://product.example.com',description:'Review prepared spreadsheet exports and reports',sender_email:'data@prepyr.com'});
- await run(db.env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",p.id);
+ await run(db.env,"UPDATE products SET state='approved',approved_revision=revision,analysis=? WHERE id=?",JSON.stringify({useCases:[fixtureUseCase]}),p.id);
  const scope=await scopeProduct(db.env,await product(db.env,p.id));
  await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,locationIds:['city:london'],campaigns:[{query:'recurring reporting professionals',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}],...extra}));
  return {...db,scope,p};
@@ -152,12 +152,12 @@ for(const {automatic,rejectedBatches} of [{automatic:true,rejectedBatches:1},{au
  globalThis.fetch=(async(url:any,init:any)=>{
   const request=JSON.parse(init.body),input=JSON.parse(request.input),response=await ai.fetcher(url,init),data:any=await response.json(),last=data.output.at(-1).content[0],stage=request.text?.format.name?.replace('relay_','')||'';
   if(request.tools){
-   if(input.campaign){batch++;last.text+='\nDirectory profiles: '+Array.from({length:4},(_,i)=>batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i)).join(', ');}
+   if(input.campaign){batch++;last.text+='\nDirectory profiles: '+Array.from({length:4},(_,i)=>batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i)).join(', ');last.text+='\n'+Array.from({length:4},(_,i)=>{const company=batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i);return 'For pump enquiries email '+address(company);}).join('\n');}
    const company=input.company||input.business?.company;
    if(company)last.text=last.text.replaceAll('buyer@pumps.example.com',address(company));
   }else{
    const out=JSON.parse(last.text);
-   if(stage==='discover_extract'){const template=out.candidates[0];out.candidates=Array.from({length:4},(_,i)=>{const company=batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i);return {...template,company,website:'https://'+address(company).split('@')[1]};});}
+   if(stage==='discover_extract'){const template=out.candidates[0];out.candidates=Array.from({length:4},(_,i)=>{const company=batch<=rejectedBatches?'Rejected '+((batch-1)*4+i):'Qualified '+((batch-rejectedBatches-1)*4+i);return {...template,company,website:'https://'+address(company).split('@')[1],publicContact:{...template.publicContact,email:address(company),excerpt:'For pump enquiries email '+address(company)}};});}
    if(stage.startsWith('contact_')){const email=input.report.match(/team@[a-z0-9.]+\.example\.org/)?.[0];if(email){out.email=email;out.excerpt='For pump enquiries email '+email;}}
    if(stage==='solution_design'&&input.business.startsWith('Rejected')){out.qualified=false;out.qualificationReason='Original source did not establish the approved workflow';}
    last.text=JSON.stringify(out);

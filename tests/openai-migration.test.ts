@@ -29,7 +29,7 @@ test('OpenAI discovery checkpoints search and extraction, deduplicates clicks an
 });
 test('large chains remain held candidates and never become automatically researched prospects',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='test';const original=globalThis.fetch;globalThis.fetch=mockOpenAI({chain:true}).fetcher;
- try{await startDiscovery(env,testSettings,testSettings.campaigns[1]);for(let i=0;i<2;i++)await processAvailableJobs(env);assert.equal((await all(env,'SELECT * FROM leads')).length,0);assert.equal((await one<any>(env,'SELECT outcome FROM discovery_candidates')).outcome,'needs_review');}finally{globalThis.fetch=original;close();}
+ try{await startDiscovery(env,testSettings,testSettings.campaigns[1]);for(let i=0;i<2;i++)await processAvailableJobs(env);assert.equal((await all(env,'SELECT * FROM leads')).length,0);assert.equal((await one<any>(env,'SELECT outcome FROM discovery_candidates')).outcome,'not_a_fit');}finally{globalThis.fetch=original;close();}
 });
 test('full staged pipeline creates a sourced specific working pilot without external enrichment or sending',async()=>{
  const {env,close}=database();env.OPENAI_API_KEY='test';const original=globalThis.fetch,{fetcher,calls}=mockOpenAI();globalThis.fetch=fetcher;

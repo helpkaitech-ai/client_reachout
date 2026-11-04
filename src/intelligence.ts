@@ -7,7 +7,7 @@ import {all,now,one,run,uid} from './db';
 import {durationPolicy} from './offers';
 import {publicContactReady,rejectCandidate} from './qualified-prospects';
 
-const contactSchema=objectSchema({email:str,sourceUrl:str,excerpt:str,identityConfirmed:{type:'boolean'},evidenceType:{type:'string',enum:['opened_page','snippet','unknown']},reason:str});
+export const contactSchema=objectSchema({email:str,sourceUrl:str,excerpt:str,identityConfirmed:{type:'boolean'},evidenceType:{type:'string',enum:['opened_page','snippet','unknown']},reason:str});
 export function supportedContact(parsed:any,text:string,sources:{url:string}[]){
  const email=cleanEmail(parsed.email);
  return !!email&&parsed.identityConfirmed===true&&listedSource(parsed.sourceUrl,sources)&&typeof parsed.excerpt==='string'&&parsed.excerpt.toLowerCase().includes(email)&&containsExcerpt(text,parsed.excerpt)&&!/^(?:no-?reply|privacy|abuse|careers|jobs|billing|accounts-payable)@/i.test(email);

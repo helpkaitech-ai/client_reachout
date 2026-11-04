@@ -6,12 +6,12 @@ import {all,one,run,settings,now,day,claimResearchBusiness} from '../src/db';
 import {saveProduct,product,scopeProduct} from '../src/products';
 import {startDiscovery} from '../src/discovery';
 import {tick} from '../src/engine';
-import {mockOpenAI} from './openai-fixture';
+import {fixtureUseCase,mockOpenAI} from './openai-fixture';
 
 async function setup(extra:any={}){
  const db=database();Object.assign(db.env,{OPENAI_API_KEY:'mock',ENABLE_AUTOMATION:'true',AI_STAGES_PER_CYCLE:'3'});
  const p=await saveProduct(db.env,{name:'Manual demo',website:'https://product.example.org',description:'Quotation specifications',sender_email:'data@prepyr.com'});
- await run(db.env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",p.id);
+ await run(db.env,"UPDATE products SET state='approved',approved_revision=revision,analysis=? WHERE id=?",JSON.stringify({useCases:[fixtureUseCase]}),p.id);
  const scope=await scopeProduct(db.env,await product(db.env,p.id));
  await run(scope,'UPDATE settings SET data=?',JSON.stringify({...testSettings,campaigns:[{query:'pump suppliers',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}],...extra}));
  const ctx={waitUntil:()=>{}} as unknown as ExecutionContext,base=db.env.APP_URL!;

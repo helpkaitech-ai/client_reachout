@@ -10,14 +10,14 @@ import {openai} from '../src/providers';
 import {nextProductCampaign} from '../src/locations';
 import {startDiscovery,importLead} from '../src/discovery';
 import {scheduleResearch,processAvailableJobs} from '../src/engine';
-import {mockOpenAI} from './openai-fixture';
+import {fixtureUseCase,mockOpenAI} from './openai-fixture';
 
 const input={name:'Product A',website:'https://pumps.example.com',description:'Specification intake product',sender_email:'data@prepyr.com'};
 const ctx={waitUntil:()=>{}} as unknown as ExecutionContext;
 async function req(env:any,path:string,payload?:any,cookie=''){return worker.fetch(new Request(env.APP_URL+path,{method:payload===undefined?'GET':'POST',headers:{Origin:env.APP_URL,'X-Requested-With':'Prepyr',Cookie:cookie},...(payload===undefined?{}:{body:JSON.stringify(payload)})}),env,ctx);}
 async function login(env:any){return (await req(env,'/api/login',{password:env.ADMIN_PASSWORD})).headers.get('set-cookie')!.split(';')[0];}
 async function pair(env:any){await run(env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,prospectingPaused:true,discoveryPaused:true}));return [await saveProduct(env,input),await saveProduct(env,{...input,name:'Product B',description:'Other product'})];}
-async function manualApprove(env:any,id:string){await run(env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",id);return scopeProduct(env,await product(env,id));}
+async function manualApprove(env:any,id:string){await run(env,"UPDATE products SET state='approved',approved_revision=revision,analysis=? WHERE id=?",JSON.stringify({useCases:[fixtureUseCase]}),id);return scopeProduct(env,await product(env,id));}
 
 test('sender, locations, customer targeting, offers, portfolio, budgets and daily/search limits persist only in the selected workspace',async()=>{
  const {env,close}=database();try{

@@ -71,7 +71,8 @@ async function dashboard(env:Env,compact=false,saved=false) {
  if(!saved)metrics.campaign=await discoveryProgress(env,s);
  const enrichedDrafts=(drafts as any[]).filter(d=>d.status==='sent'||readyPage.rows.some((l:any)=>l.draft_id===d.id)).map(d=>{const l=(leads as Lead[]).find(l=>l.id===d.lead_id);return {...d,sendIssues:l?approvalProblems(d,{...l,eligibility:l.eligibility==='ineligible'?'ineligible':'eligible',eligibility_note:'Confirmed at approval',verification:l.verification==='invalid'?'invalid':'owner_reviewed'},s):['Prospect record not in current view']};});
  const pipeline={provider:'openai',providerBlock:saved?null:await providerBlock(env),pausedJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('paused','paused_provider')"))?.n||0,waitingResearch:await researchBacklog(env),attentionJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')"))?.n||0};
- return {settings:s,locationOptions,connections:connections(env,s),metrics,stats,usage,budgets,pipeline,drafts:enrichedDrafts,leads,messages,jobs,events,runs,notifications,expenses,date:day()};
+ const reviewDrafts=env.PRODUCT_ID&&!saved?await all(env,"SELECT d.id,d.lead_id,d.subject,d.quality_hold,l.company FROM drafts d JOIN leads l ON l.id=d.lead_id WHERE d.kind='initial' AND d.status='pending' AND d.quality_hold LIKE ? ORDER BY d.created_at DESC LIMIT 50",'Product-fit rules updated;%'):[];
+ return {reviewDrafts,settings:s,locationOptions,connections:connections(env,s),metrics,stats,usage,budgets,pipeline,drafts:enrichedDrafts,leads,messages,jobs,events,runs,notifications,expenses,date:day()};
 }
 async function mutate(request:Request,env:Env,path:string,input:any) {
  const s=await settings(env);

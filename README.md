@@ -134,3 +134,24 @@ The existing scheduled worker attempts a checkpoint at most every five minutes, 
 For the approved outage recovery, `npm run backup:import` loads `artifacts/relay-workspace-records.sql` into the protected backup through an authenticated, same-origin import, verifies all table counts and a SHA-256 digest, and logs no private record contents. Production D1 is never restored or overwritten by this operation. Keep the SQL recovery file private. The streamed import accepts only workspace columns/tables and publishes the replacement atomically. Regenerate the schema after future D1 schema changes with `npm run backup:schema`.
 
 `npm run smoke:workspace` requires usable pages; a 503 does not count as success. It checks every recovered prospect detail, all draft bodies and previews, fetched email history, all dashboard filters, full pagination/search, saved settings, UI navigation/reload, export integrity, origin protection and logout revocation. Evidence is saved in `artifacts/workspace-hosted-smoke.json` without email content. The isolated local fixture deliberately throws the production D1 quota error; its real-browser screenshots are in `output/playwright/relay-outage-*.png`.
+
+## Email-first, product-specific discovery
+
+New searches first establish a published business email with an exact source quote
+and a product-relevant workflow. Candidates without both stay in search history;
+they do not consume a business-enrichment slot or appear as qualified prospects.
+A source-proven contact is reused during enrichment instead of searched again.
+Published addresses still have unknown mailbox deliverability.
+
+Product profiles now contain specific buyer workflows, supported capabilities with
+source evidence, observable fit signals, poor-fit signals and focused search
+phrases. Discovery and independent enrichment must map facts to one of those
+supported use cases; an industry label alone is insufficient. The email review
+shows the observed workflow, matching product capability, source and unknowns.
+Older unsent product drafts are held for renewed fit review, preserving their text
+and sent history. Open Settings → Earlier drafts to reassess to review them after
+the profile refresh; Improve this email rechecks their fit. Profiles regenerate automatically on the next Find prospects
+request. Search and monthly budget limits remain in force.
+
+The separate [agentic search research](AGENTIC_SEARCH_RESEARCH.md) proposes an
+experiment and evaluation criteria. It does not implement an agent architecture.

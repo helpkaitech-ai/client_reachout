@@ -7,7 +7,7 @@ import {assertProviderAvailable,blockProvider} from './provider-control';
 
 export class StageYield extends Error {}
 export interface Workflow {jobId:string;paidCalls:number;retryVersion?:number;priority?:boolean;maxCost?:number}
-export interface AiOptions {search?:boolean;schema?:object;workflow?:Workflow;stage?:string;maxOutput?:number;maxTools?:number;domains?:string[];location?:{country:string;city?:string};images?:string[];}
+export interface AiOptions {search?:boolean;searchContext?:'low'|'medium'|'high';schema?:object;workflow?:Workflow;stage?:string;maxOutput?:number;maxTools?:number;domains?:string[];location?:{country:string;city?:string};images?:string[];}
 export function searchUsage(data:any) {
  const reported=data.tool_usage?.web_search?.num_requests;
  if(Number.isInteger(reported)&&reported>=0)return {count:reported,estimated:false};
@@ -76,7 +76,7 @@ export async function requestOpenAI(env:Env,s:Settings,input:string,instructions
  async function perform(expenseId:string,attemptId:string|null):Promise<any>{
   let usageKnown=false;
   try{
-   const tool:any={type:'web_search',search_context_size:'low',external_web_access:true};
+   const tool:any={type:'web_search',search_context_size:options.searchContext||'low',external_web_access:true};
    if(options.domains?.length)tool.filters={allowed_domains:options.domains};
    if(options.location)tool.user_location={type:'approximate',...options.location};
    const body:any={model,instructions,input,max_output_tokens:maxOutput,store:false,reasoning:{effort:'low'}};

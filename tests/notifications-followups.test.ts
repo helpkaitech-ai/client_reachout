@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {JSDOM} from 'jsdom';
 import {database,readyLead,readyDraft,testSettings,mockGoogle} from './helpers';
-import {mockOpenAI} from './openai-fixture';
+import {fixtureUseCase,mockOpenAI} from './openai-fixture';
 import {all,one,run,now} from '../src/db';
 import {ingestMessage,sendApproved} from '../src/mail';
 import {tick,processAvailableJobs} from '../src/engine';
@@ -90,7 +90,7 @@ test('product follow-ups use the approved product, owner remarks, sequence numbe
  const {env,close}=database(),original=globalThis.fetch,{fetcher,calls}=mockOpenAI();env.OPENAI_API_KEY='test';globalThis.fetch=fetcher;
  try{
   const p=await saveProduct(env,{name:'QuoteFlow',website:'https://pumps.example.com',description:'Collect flange specifications before quoting',remarks:'Do not offer free trials',sender_email:'data@prepyr.com'});
-  await run(env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",p.id);const scope=await scopeProduct(env,{...p,state:'approved',approved_revision:p.revision}),lead=await readyLead(scope);await run(scope,"UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('false'))");
+  await run(env,"UPDATE products SET state='approved',approved_revision=revision,analysis=? WHERE id=?",JSON.stringify({useCases:[fixtureUseCase]}),p.id);const scope=await scopeProduct(env,{...p,state:'approved',approved_revision:p.revision,analysis:JSON.stringify({useCases:[fixtureUseCase]})}),lead=await readyLead(scope);await run(scope,"UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('false'))");
   await run(scope,"UPDATE leads SET status='contacted',next_followup_at=? WHERE id=?",new Date(Date.now()+4*86400000).toISOString(),lead.id);await run(scope,"INSERT INTO jobs(id,kind,lead_id,created_at,updated_at) VALUES('product-followup','followup',?,?,?)",lead.id,now(),now());
   for(let i=0;i<5;i++)await processAvailableJobs(scope);
   const draft=await one<any>(scope,"SELECT * FROM drafts WHERE kind='followup'");assert.ok(draft);assert.equal(draft.status,'pending');assert.equal(draft.approved_hash,null);assert.ok(draft.send_after);
