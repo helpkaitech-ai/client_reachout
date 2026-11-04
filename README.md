@@ -1,6 +1,6 @@
 # Relay - client outreach
 
-Website: https://prepyr-outreach.prepyr-data.workers.dev
+Website: [Relay](https://prepyr-outreach.prepyr-data.workers.dev)
 
 ## Relay and workspace controls
 
