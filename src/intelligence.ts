@@ -8,9 +8,10 @@ import {durationPolicy} from './offers';
 import {publicContactReady,rejectCandidate} from './qualified-prospects';
 
 export const contactSchema=objectSchema({email:str,sourceUrl:str,excerpt:str,identityConfirmed:{type:'boolean'},evidenceType:{type:'string',enum:['opened_page','snippet','unknown']},reason:str});
+export function appropriatePublicEmail(value:unknown){const email=cleanEmail(value);return email&&!/^(?:no-?reply|privacy|abuse|careers|jobs|billing|accounts-payable)@/i.test(email)?email:null;}
 export function supportedContact(parsed:any,text:string,sources:{url:string}[]){
- const email=cleanEmail(parsed.email);
- return !!email&&parsed.identityConfirmed===true&&listedSource(parsed.sourceUrl,sources)&&typeof parsed.excerpt==='string'&&parsed.excerpt.toLowerCase().includes(email)&&containsExcerpt(text,parsed.excerpt)&&!/^(?:no-?reply|privacy|abuse|careers|jobs|billing|accounts-payable)@/i.test(email);
+ const email=appropriatePublicEmail(parsed.email);
+ return !!email&&parsed.identityConfirmed===true&&listedSource(parsed.sourceUrl,sources)&&typeof parsed.excerpt==='string'&&parsed.excerpt.toLowerCase().includes(email)&&containsExcerpt(text,parsed.excerpt);
 }
 export async function researchContact(env:Env,s:Settings,lead:Lead,w:Workflow){
  const checkpoint=await one<{data:string}>(env,'SELECT data FROM pipeline_results WHERE job_id=?',w.jobId+':contact');

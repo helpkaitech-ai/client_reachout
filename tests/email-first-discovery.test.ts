@@ -22,8 +22,9 @@ async function setup(productWorkspace=true){
  await run(scope,'INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',JSON.stringify({...testSettings,locationIds:['city:london'],campaigns:[{query:'pump suppliers',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}]}));
  return {...db,scope};
 }
-function aiWith(transform:(stage:string,out:any)=>void){
- const ai=mockOpenAI();return {...ai,fetcher:(async(url:any,init:any)=>{
+function aiWith(transform:(stage:string,out:any)=>void,options:Parameters<typeof mockOpenAI>[0]={}){
+ const ai=mockOpenAI(options);return {...ai,fetcher:(async(url:any,init:any)=>{
+  if(String(url)!=='https://api.openai.com/v1/responses')return ai.fetcher(url,init);
   const input=JSON.parse(init.body),response=await ai.fetcher(url,init),stage=input.text?.format.name?.replace('relay_','');
   if(!stage)return response;
   const data:any=await response.json(),content=data.output.at(-1).content[0],out=JSON.parse(content.text);
@@ -46,35 +47,35 @@ for(const productWorkspace of [true,false])test(`${productWorkspace?'product':'E
 
 for(const productWorkspace of [true,false])for(const failure of ['missing','guessed','snippet','unlisted_source','unconfirmed_identity','inappropriate_mailbox'])test(`${productWorkspace?'product':'Existing outreach'} rejects ${failure} contacts before admitting a research candidate`,async()=>{
  const x=await setup(productWorkspace),original=globalThis.fetch,ai=aiWith((stage,out)=>{
-  if(stage!=='discover_extract')return;const c=out.candidates[0].publicContact;
+  if(!['discover_extract','discover_evidence_repair'].includes(stage))return;const c=out.candidates[0].publicContact;
   if(failure==='missing')c.email='';if(failure==='guessed')c.email='guessed@pumps.example.com';
   if(failure==='snippet')c.evidenceType='snippet';if(failure==='unlisted_source')c.sourceUrl='https://unconsulted.example.org/contact';
   if(failure==='unconfirmed_identity')c.identityConfirmed=false;if(failure==='inappropriate_mailbox'){c.email='privacy@pumps.example.com';c.excerpt='For pump enquiries email privacy@pumps.example.com';}
- });globalThis.fetch=(async(url:any,init:any)=>{const r=await ai.fetcher(url,init);if(failure==='inappropriate_mailbox'&&JSON.parse(init.body).tools){const data:any=await r.json();data.output.at(-1).content[0].text=data.output.at(-1).content[0].text.replaceAll('buyer@pumps.example.com','privacy@pumps.example.com');return Response.json(data);}return r;}) as typeof fetch;
+ },{snippetUrls:failure==='snippet'?[sourceUrls[1]]:[]});globalThis.fetch=(async(url:any,init:any)=>{if(String(url)!=='https://api.openai.com/v1/responses')return ai.fetcher(url,init);const r=await ai.fetcher(url,init);if(failure==='inappropriate_mailbox'&&JSON.parse(init.body).tools){const data:any=await r.json();data.output.at(-1).content[0].text=data.output.at(-1).content[0].text.replaceAll('buyer@pumps.example.com','privacy@pumps.example.com');return Response.json(data);}return r;}) as typeof fetch;
  try{
   await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
   assert.equal((await all(x.scope,'SELECT * FROM leads')).length,0);
   assert.equal((await all(x.scope,'SELECT * FROM research_claims')).length,0);
   assert.equal((await one<any>(x.scope,'SELECT outcome FROM discovery_candidates'))!.outcome,'no_public_email');
-  assert.equal(ai.calls.length,2);
+  assert.equal(ai.calls.length,failure==='snippet'||failure==='unlisted_source'?3:2);
  }finally{globalThis.fetch=original;x.close();}
 });
 
 for(const failure of ['no_mapping','unknown_use_case','invented_capability','snippet','paraphrase','explicit_mismatch'])test(`a public email does not admit a candidate with ${failure} product fit`,async()=>{
  const x=await setup(),original=globalThis.fetch,ai=aiWith((stage,out)=>{
-  if(stage!=='discover_extract')return;const c=out.candidates[0];
+  if(!['discover_extract','discover_evidence_repair'].includes(stage))return;const c=out.candidates[0];
   if(failure==='no_mapping')delete c.productFit;
   if(failure==='unknown_use_case')c.productFit.useCaseId='unrelated';
   if(failure==='invented_capability')c.productFit.productCapability='Automatic enterprise accounting integration';
   if(failure==='snippet')c.productFit.evidenceType='snippet';
   if(failure==='paraphrase')c.productFit.excerpt='The business needs quotation intake automation, which it does not have.';
   if(failure==='explicit_mismatch')c.productFit.disqualifierFound=true;
- });globalThis.fetch=ai.fetcher;
+ },{snippetUrls:failure==='snippet'?[sourceUrls[0]]:[]});globalThis.fetch=ai.fetcher;
  try{
   await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
   assert.equal((await all(x.scope,'SELECT * FROM leads')).length,0);
   const candidate=await one<any>(x.scope,'SELECT outcome,data FROM discovery_candidates');assert.equal(candidate.outcome,'not_a_fit');assert.ok(JSON.parse(candidate.data).discoveryIssues.length);
-  assert.equal(ai.calls.length,2);
+  assert.equal(ai.calls.length,['snippet','paraphrase'].includes(failure)?3:2);
  }finally{globalThis.fetch=original;x.close();}
 });
 
@@ -110,6 +111,60 @@ test('capability provenance must quote a consulted product source or the owner d
  assert.equal(supportedCapability(fixtureUseCase,product,'The product captures pump flange and pressure specifications for quotation requests.',sourceUrls.map(url=>({url}))),true);
  assert.equal(supportedCapability(fixtureUseCase,product,'Nothing about that feature.',sourceUrls.map(url=>({url}))),false);
  assert.equal(supportedCapability({...fixtureUseCase,capabilityEvidence:{sourceType:'owner_description',sourceUrl:'',excerpt:product.description}},product,'',[]),true);
+});
+
+test('direct page evidence recovers snippet-labelled contacts and workflow quotes without another search',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=aiWith((stage,out)=>{
+  if(stage!=='discover_extract')return;
+  const c=out.candidates[0];c.publicContact.evidenceType='snippet';c.publicContact.excerpt='“'+c.publicContact.excerpt+'”';c.productFit.evidenceType='snippet';
+ });globalThis.fetch=ai.fetcher;
+ try{await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(publicContactReady(lead),true);
+  assert.equal(ai.calls.filter(c=>c.tools).length,1);assert.equal(ai.calls.length,2);
+  assert.equal((await one<any>(x.scope,'SELECT outcome FROM discovery_candidates'))!.outcome,'imported');
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('a bare hostname attested by official sources does not reject a fully evidenced prospect',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=aiWith((stage,out)=>{if(stage==='discover_extract')out.candidates[0].website='pumps.example.com';});globalThis.fetch=ai.fetcher;
+ try{await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.equal(lead.website,'https://pumps.example.com/');assert.equal(publicContactReady(lead),true);
+  assert.equal(ai.calls.length,2);assert.equal((await one<any>(x.scope,'SELECT outcome FROM discovery_candidates'))!.outcome,'imported');
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('discovery receives short workflow seeds without duplicated legacy queries or email guidance',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
+ try{const p=await one<any>(x.env,'SELECT * FROM products'),phrase='monthly management reporting CSV export contact email';
+  await run(x.env,'UPDATE products SET analysis=? WHERE id=?',JSON.stringify({useCases:[{...fixtureUseCase,searchPhrases:[phrase,'weekly performance report Excel email']}],campaigns:[{query:'LEGACY_OTHER_LOCATION_QUERY'}],emailGuidance:'LEGACY_CONTACT_QUERY_GUIDANCE'}),p.id);
+  const scope=await scopeProduct(x.env,await product(x.env,p.id));await startDiscovery(scope,await settings(scope));await processAvailableJobs(scope);
+  const request=ai.calls[0],input=JSON.parse(request.input);assert.ok(input.maximumCandidates>=6);
+  assert.ok(input.businessQueries.every((q:string)=>!/(csv|excel|export|contact|email)/i.test(q)));
+  assert.equal(input.productUseCases[0].searchPhrases,undefined);assert.equal(input.desiredProspects,undefined);
+  assert.ok(!request.instructions.includes(phrase));assert.doesNotMatch(request.instructions,/LEGACY_OTHER_LOCATION_QUERY|LEGACY_CONTACT_QUERY_GUIDANCE/);
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('an official recurring workflow and sourced contact can produce a specific draft without an arbitrary second domain',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=mockOpenAI({officialOnly:true});globalThis.fetch=ai.fetcher;
+ try{await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<8;i++)await tick(x.scope);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads'),draft=await one<any>(x.scope,'SELECT * FROM drafts');
+  assert.ok(draft);assert.equal(draft.quality_hold,'');assert.equal(draft.status,'pending');assert.equal(publicContactReady(lead),true);
+  assert.ok(JSON.parse(lead.dossier).facts.length>=2);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=original;x.close();}
+});
+
+test('one valid candidate cannot mask another candidate with broken contact evidence',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=aiWith((stage,out)=>{
+  if(!['discover_extract','discover_evidence_repair'].includes(stage))return;
+  const valid=out.candidates[0],broken=structuredClone(valid);broken.company='Other Pumps';broken.publicContact.sourceUrl='https://unconsulted.example.org/contact';out.candidates=[valid,broken];
+ });globalThis.fetch=ai.fetcher;
+ try{await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
+  assert.equal(ai.calls.filter(c=>c.tools).length,1);assert.ok(ai.calls.find(c=>c.text?.format.name==='relay_discover_evidence_repair'));
+  const candidates=await all<any>(x.scope,'SELECT data,outcome FROM discovery_candidates');assert.equal(candidates.length,2);
+  assert.equal(candidates.find(c=>JSON.parse(c.data).company==='Example Pumps')!.outcome,'imported');
+  assert.equal(candidates.find(c=>JSON.parse(c.data).company==='Other Pumps')!.outcome,'no_public_email');
+ }finally{globalThis.fetch=original;x.close();}
 });
 
 test('email-first migration preserves text and sent history while holding older unsent product drafts for renewed fit review',async()=>{

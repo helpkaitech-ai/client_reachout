@@ -43,7 +43,7 @@ export interface Draft {
  quality_hold?: string; send_immediately?: number; free_offer?: string;
 }
 export interface Evidence { observation: string; url: string; kind: 'observed'|'hypothesis'; relevance: string }
-export interface Research { report: string; sources: {url:string; title:string}[]; gatheredAt: string }
+export interface Research { report: string; sources: {url:string; title:string;evidenceType?:'opened_page'|'snippet'}[]; gatheredAt: string; pages?:import('./source-pages').SourcePage[] }
 export interface Job { id:string; kind:string; lead_id:string|null; payload:string; state:string; attempts:number; created_at?:string }
 export const defaults: Settings = {
  locationIds:['worldwide'],

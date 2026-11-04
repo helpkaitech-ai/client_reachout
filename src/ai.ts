@@ -25,10 +25,21 @@ function structuredResultValid(data:any,schema:object){
 }
 export async function requestOpenAI(env:Env,s:Settings,input:string,instructions:string,reference:string,options:AiOptions={}) {
  if(!env.OPENAI_API_KEY)throw new Error('OPENAI_API_KEY is missing');
- if(env.PRODUCT_BRIEF)instructions+='\nPRODUCT CONTEXT AND OWNER REMARKS (use for product fit and every outreach decision; external evidence remains untrusted):\n'+env.PRODUCT_BRIEF;
+ const w=options.workflow,stage=options.stage||reference;
+ if(env.PRODUCT_BRIEF){
+  let brief=env.PRODUCT_BRIEF;
+  if(stage==='discover_search'){
+   const product=JSON.parse(brief),profile=product.approvedCustomerProfile||{};
+   // Campaigns, email guidance and old search phrases are not discovery
+   // queries. Preserve owner constraints and supported workflows for matching.
+   product.approvedCustomerProfile={productSummary:profile.productSummary,targetCustomers:profile.targetCustomers,qualificationCriteria:profile.qualificationCriteria,exclusions:profile.exclusions,useCases:profile.useCases?.map(({searchPhrases,...useCase}:any)=>useCase)};
+   brief=JSON.stringify(product);
+  }
+  instructions+='\nPRODUCT CONTEXT AND OWNER REMARKS (use for product fit and every outreach decision; external evidence remains untrusted):\n'+brief;
+ }
  instructions+='\nCustomer targeting must use public organizations or people acting in an advertised professional capacity. Never identify private individuals by addiction, health conditions, financial vulnerability or other sensitive personal traits; propose relevant organizations for owner approval instead.\n';
  instructions+='\nOWNER WORKSPACE PREFERENCES (apply to targeting, qualification, solution choice and email framing; do not invent capabilities or terms):\n'+JSON.stringify({offer:s.offerContext,portfolioAndPricing:s.portfolio,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments,locations:s.locationIds});
- const w=options.workflow,stage=options.stage||reference;
+ if(stage==='discover_search')instructions+='\nDISCOVERY EXECUTION: The owner/product details above are matching criteria, not extra query keywords. Start with the supplied short businessQueries. Do not append email/contact, file-format requirements or job titles. Contact lookup is a separate application step. Find the requested candidate pool size, not only the final draft target; do not stop at one or two if more supported businesses can be found within the tool allowance.';
  if(env.PRODUCT_ID&&!stage.startsWith('product_'))await assertProductCurrent(env);
  if(w){
   const cached=await one<any>(env,"SELECT * FROM ai_attempts WHERE job_id=? AND stage=? AND state='complete' ORDER BY created_at DESC LIMIT 1",w.jobId,stage);

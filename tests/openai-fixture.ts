@@ -5,10 +5,10 @@ export const businessReport=`Example Pumps is an independent supplier. Opened ca
 export const fixtureUseCase={id:'pump-quotes',buyerRole:'Pump sales operations team',workflow:'Collect flange and pressure specifications for quotation requests',productCapability:'Capture pump flange and pressure specifications for quotations',capabilityEvidence:{sourceType:'official_page',sourceUrl:sourceUrls[0],excerpt:'The product captures pump flange and pressure specifications for quotation requests.'},fitSignals:['Published pump catalogue with specification-based quotation requests'],poorFitSignals:['Only sells unrelated consumer products'],searchPhrases:['pump suppliers flange specification quotations','industrial pumps pressure rating quote requests']};
 export const fixtureProductFit={useCaseId:fixtureUseCase.id,observedWorkflow:'Offers pump flanges with different connection sizes for specification-based quotes',productCapability:fixtureUseCase.productCapability,whyRelevant:'Its published specification and quotation workflow maps to the product intake capability',sourceUrl:sourceUrls[0],excerpt:'DIN pump flanges are offered in multiple connection sizes.',evidenceType:'opened_page',disqualifierFound:false};
 export const fixtureContact={email:'buyer@pumps.example.com',sourceUrl:sourceUrls[1],excerpt:contactExcerpt,identityConfirmed:true,evidenceType:'opened_page',reason:'Publicly listed on the business contact page'};
-export function mockOpenAI(options:{noEmail?:boolean;weak?:boolean;generic?:boolean;chain?:boolean;badEmail?:boolean;maxFacts?:boolean;badEvidence?:boolean}={}){
+export function mockOpenAI(options:{noEmail?:boolean;weak?:boolean;generic?:boolean;chain?:boolean;badEmail?:boolean;maxFacts?:boolean;badEvidence?:boolean;snippetUrls?:string[];officialOnly?:boolean}={}){
  const calls:any[]=[];
  const fetcher=(async(url:any,init:any)=>{
-  if(String(url)!=='https://api.openai.com/v1/responses')throw new Error('Unexpected provider request');
+  if(String(url)!=='https://api.openai.com/v1/responses'){if(sourceUrls.includes(String(url)))return new Response('<html><body>'+businessReport+'</body></html>',{headers:{'content-type':'text/html'}});throw new Error('Unexpected provider request');}
   const body=JSON.parse(init.body);calls.push(body);let text:string;
   if(body.tools){text=body.instructions.includes('Research this PRODUCT')?'The product captures pump flange and pressure specifications for quotation requests.':body.instructions.includes('Research ONLY')?(options.noEmail?'NOT FOUND':contactExcerpt):businessReport;}
   else{
@@ -28,7 +28,7 @@ export function mockOpenAI(options:{noEmail?:boolean;weak?:boolean;generic?:bool
    if(props.candidates&&options.badEvidence&&body.text.format.name==='relay_discover_extract')output.candidates[0].evidenceExcerpt='Unsupported imaginary business claim that is absent from the saved report';
    text=JSON.stringify(output);
   }
-  return Response.json({id:'resp_'+calls.length,status:'completed',usage:{input_tokens:400,output_tokens:200},tool_usage:{web_search:{num_requests:body.tools?1:0}},output:[...(body.tools?[{type:'web_search_call',action:{type:'search',sources:(options.weak?sourceUrls.slice(0,1):sourceUrls).map(url=>({url,title:'Business source'}))}}]:[]),{type:'message',content:[{type:'output_text',text}]}]},{headers:{'x-request-id':'req_'+calls.length}});
+  return Response.json({id:'resp_'+calls.length,status:'completed',usage:{input_tokens:400,output_tokens:200},tool_usage:{web_search:{num_requests:body.tools?1:0}},output:[...(body.tools?[{type:'web_search_call',status:'completed',action:{type:'search',sources:(options.weak?sourceUrls.slice(0,1):options.officialOnly?sourceUrls.slice(0,2):sourceUrls).map(url=>({url,title:'Business source'}))}},...(options.weak?sourceUrls.slice(0,1):options.officialOnly?sourceUrls.slice(0,2):sourceUrls).filter(url=>!options.snippetUrls?.includes(url)).map(url=>({type:'web_search_call',status:'completed',action:{type:'open_page',url}}))]:[]),{type:'message',content:[{type:'output_text',text}]}]},{headers:{'x-request-id':'req_'+calls.length}});
  }) as typeof fetch;
  return {fetcher,calls};
 }
