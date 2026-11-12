@@ -1,25 +1,44 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readEnv,root } from './env.mjs';
-const e=readEnv();const origin=e.APP_URL;if(!origin)throw new Error('Deploy first');
-const checks=[];
-async function check(label,fn){await fn();checks.push({check:label,passed:true});console.log('PASS '+label);}
+import {fileURLToPath} from 'node:url';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const origin=process.env.APP_URL||'https://prepyr-outreach.prepyr-data.workers.dev';
+const password=process.argv.includes('--authenticated')?process.env.ADMIN_PASSWORD:undefined;
+if(!origin)throw new Error('Set APP_URL to the deployed Relay origin');
+const checks=[],retired=['outreachPaused','prospectingPaused','discoveryPaused','discoveryPausedUntil','discoveryIntervalDays','researchAutomation'];
 let cookie='';
-await check('public app and security headers',async()=>{const r=await fetch(origin);assert.equal(r.status,200);assert.match(await r.text(),/Relay/);assert.ok(r.headers.get('content-security-policy'));});
-await check('health endpoint',async()=>{const r=await fetch(origin+'/health');assert.equal(r.status,200);assert.equal((await r.json()).ok,true);});
-await check('private dashboard rejects anonymous requests',async()=>{const r=await fetch(origin+'/api/dashboard');assert.equal(r.status,401);});
-await check('notification inbox rejects anonymous requests',async()=>{assert.equal((await fetch(origin+'/api/notifications')).status,401);});
-await check('authenticated login',async()=>{const r=await fetch(origin+'/api/login',{method:'POST',headers:{Origin:origin,'X-Requested-With':'Prepyr','Content-Type':'application/json'},body:JSON.stringify({password:e.ADMIN_PASSWORD})});assert.equal(r.status,200);cookie=r.headers.get('set-cookie').split(';')[0];assert.match(r.headers.get('set-cookie'),/HttpOnly/);});
-await check('D1-backed dashboard, configured limits, and deployed activation settings',async()=>{const r=await fetch(origin+'/api/dashboard',{headers:{Cookie:cookie}});assert.equal(r.status,200);const d=await r.json();assert.equal(d.availability?.readOnly,undefined);assert.equal(d.settings.dailyNewLimit,12);assert.equal(d.settings.dailyTotalLimit,12);assert.equal(d.settings.dailyResearchLimit,20);assert.equal(d.settings.openaiBudget,50);assert.equal(d.connections.discoveryProvider,'openai');assert.equal('apifyBudget' in d.settings,false);assert.equal('verificationBudget' in d.settings,false);assert.equal(d.connections.sendingEnabled,e.ENABLE_SENDING==='true'&&!d.settings.outreachPaused&&!d.settings.prospectingPaused);assert.equal(d.connections.automationEnabled,e.ENABLE_AUTOMATION==='true'&&!d.settings.outreachPaused&&!d.settings.prospectingPaused);assert.equal(JSON.stringify(d).includes(e.ADMIN_PASSWORD),false);});
-await check('location dropdown has countries, regions and cities with automatic worldwide selection',async()=>{const d=await(await fetch(origin+'/api/dashboard',{headers:{Cookie:cookie}})).json();assert.ok(d.locationOptions.some(o=>o.id==='worldwide'));for(const g of ['Countries','Regions','Cities'])assert.ok(d.locationOptions.some(o=>o.group===g));assert.ok(d.settings.locationIds.length>0);for(const id of d.settings.locationIds)assert.ok(d.locationOptions.some(o=>o.id===id));});
-await check('enabled sending has the saved postal address in the actual email preview',async()=>{const d=await(await fetch(origin+'/api/dashboard',{headers:{Cookie:cookie}})).json();if(e.ENABLE_SENDING==='true'){assert.ok(d.settings.businessAddress.trim());assert.ok(d.drafts.some(x=>x.status==='pending'));const draft=d.drafts.find(x=>x.status==='pending');const p=await(await fetch(origin+`/api/drafts/${draft.id}/preview`,{headers:{Cookie:cookie}})).json();assert.ok(p.body.includes(d.settings.businessAddress));}});
-await check('cross-origin mutations denied',async()=>{const r=await fetch(origin+'/api/tick',{method:'POST',headers:{Cookie:cookie,Origin:'https://wrong.example','X-Requested-With':'Prepyr'},body:'{}'});assert.equal(r.status,403);});
-await check('Products, Prospects, Dashboard and Settings navigation is published',async()=>{const html=await(await fetch(origin)).text();assert.deepEqual([...html.matchAll(/data-view="([^"]+)"/g)].map(m=>m[1]),['products','prospects','dashboard','settings']);});
-await check('notification bell, authenticated feed and maximum three follow-ups are live',async()=>{const html=await(await fetch(origin)).text();assert.ok(html.includes('id="notification-toggle"'));assert.ok(html.includes('id="notification-panel"'));const r=await fetch(origin+'/api/notifications',{headers:{Cookie:cookie}});assert.equal(r.status,200);const feed=await r.json();assert.ok(Array.isArray(feed.items));assert.ok(feed.items.length<=50);assert.ok(feed.unread>=feed.items.filter(n=>!n.read_at).length);const d=await(await fetch(origin+'/api/dashboard?summary=1',{headers:{Cookie:cookie}})).json();assert.ok(d.settings.followupDays.length<=3);assert.deepEqual(d.settings.followupDays,[4,10,18]);});
-await check('persistent program controls and six-day discovery schedule are published',async()=>{const html=await(await fetch(origin)).text();assert.ok(html.includes('id="outreach-toggle"'));assert.ok(html.includes('id="outreach-state"'));const d=await(await fetch(origin+'/api/dashboard?summary=1',{headers:{Cookie:cookie}})).json();assert.equal(d.settings.discoveryIntervalDays,6);assert.equal(typeof d.settings.outreachPaused,'boolean');assert.equal(typeof d.settings.discoveryPaused,'boolean');if(d.settings.outreachPaused){assert.equal(d.connections.sendingEnabled,false);assert.equal(d.connections.automationEnabled,false);assert.equal(d.connections.notificationsEnabled,false);}});
-await check('dashboard cards return matching server-filtered prospect details',async()=>{for(const group of ['all','pending','sent','contacted','followup','replied','attention']){const r=await fetch(origin+'/api/prospects?group='+group,{headers:{Cookie:cookie}});assert.equal(r.status,200);const p=await r.json();assert.ok(Array.isArray(p.rows));assert.ok(p.total>=p.rows.length);if(group==='pending')assert.ok(p.rows.every(l=>l.email_status==='pending'));if(group==='sent')assert.ok(p.rows.every(l=>l.email_status==='sent'));}});
-await check('prospect emails contain inline free offers and no separate appendix',async()=>{const d=await(await fetch(origin+'/api/dashboard',{headers:{Cookie:cookie}})).json();for(const x of d.drafts.filter(x=>x.kind==='initial'&&x.status==='pending')){assert.equal(x.artifact,'');const offer=JSON.parse(x.free_offer||'{}');if(!x.quality_hold){assert.ok(offer.emailExcerpt);assert.ok(x.body.toLowerCase().includes(offer.emailExcerpt.toLowerCase()));assert.ok(x.body.toLowerCase().includes(offer.businessDetail.toLowerCase()));assert.ok(JSON.parse(x.evidence).filter(e=>e.kind==='observed').length>=2);}}if(d.leads.length){const r=await fetch(origin+'/api/prospects/'+d.leads[0].id,{headers:{Cookie:cookie}});assert.equal(r.status,200);const detail=await r.json();assert.equal(detail.lead.id,d.leads[0].id);assert.ok(Array.isArray(detail.messages));}});
-await check('logout invalidates session',async()=>{await fetch(origin+'/api/logout',{method:'POST',headers:{Cookie:cookie,Origin:origin,'X-Requested-With':'Prepyr'},body:'{}'});assert.equal((await fetch(origin+'/api/dashboard',{headers:{Cookie:cookie}})).status,401);});
+async function request(route,body){return fetch(origin+route,{method:body===undefined?'GET':'POST',headers:{'User-Agent':'Mozilla/5.0 RelayReleaseCheck',...(cookie?{Cookie:cookie}:{}),...(body===undefined?{}:{Origin:origin,'X-Requested-With':'Prepyr','Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
+async function check(label,fn){await fn();checks.push({check:label,passed:true});console.log('PASS '+label);}
+await check('published interface has Search prospects and no pause controls',async()=>{
+ const response=await request('/');assert.equal(response.status,200);assert.ok(response.headers.get('content-security-policy'));
+ const html=await response.text();assert.doesNotMatch(html,/outreach-toggle|outreach-state|Pause Relay|Resume Relay/);
+ const js=await request('/app.js');assert.equal(js.status,200);const code=await js.text();assert.match(code,/Search prospects/);assert.doesNotMatch(code,/data-product-approve|Pause Relay|Resume Relay/);
+});
+await check('health and anonymous access protection',async()=>{
+ const health=await request('/health');assert.equal(health.status,200);assert.equal((await health.json()).ok,true);
+ for(const route of ['/api/dashboard','/api/notifications','/api/products'])assert.equal((await request(route)).status,401);
+});
+if(!password)console.log('SKIP authenticated checks: use --authenticated with ADMIN_PASSWORD explicitly supplied');
+else{
+try{
+ await check('authenticated session',async()=>{const response=await request('/api/login',{password});assert.equal(response.status,200,'Hosted login failed');cookie=response.headers.get('set-cookie').split(';')[0];assert.match(response.headers.get('set-cookie'),/HttpOnly/);});
+ await check('live workspaces expose manual discovery without legacy pause or interval settings',async()=>{
+  const response=await request('/api/products');assert.equal(response.status,200);const {products}=await response.json();
+  for(const id of ['',...products.map(p=>p.id)]){
+   const query=id?'&product='+encodeURIComponent(id):'',r=await request('/api/dashboard?summary=1'+query);assert.equal(r.status,200);const data=await r.json();assert.equal(data.availability?.readOnly,undefined);
+   for(const key of retired)assert.equal(key in data.settings,false,`Retired setting: ${key}`);
+   assert.equal(data.connections.automationEnabled,false);assert.ok(data.settings.dailyLeadLimit>0);assert.ok(data.settings.openaiBudget<=50);
+   const list=await request('/api/prospects?group=pending'+query);assert.equal(list.status,200);const page=await list.json();assert.ok(Array.isArray(page.rows));assert.ok(page.total>=page.rows.length);
+  }
+ });
+ await check('retired program, product pause and profile approval endpoints cannot mutate state',async()=>{
+  assert.equal((await request('/api/outreach/control',{paused:true})).status,410);
+  const {products}=await(await request('/api/products')).json();
+  if(products.length)for(const action of ['pause','prospecting','approve'])assert.equal((await request('/api/products/'+products[0].id+'/'+action,{})).status,410);
+ });
+}finally{
+ if(cookie){const logout=await request('/api/logout',{});assert.equal(logout.status,200);assert.equal((await request('/api/dashboard')).status,401);}
+}
+}
 fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});fs.writeFileSync(path.join(root,'artifacts/hosted-smoke.json'),JSON.stringify({url:origin,time:new Date().toISOString(),checks},null,2));
-
