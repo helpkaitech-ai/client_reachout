@@ -8,7 +8,7 @@ const html=fs.readFileSync('public/index.html','utf8'),code=fs.readFileSync('pub
 const flush=()=>new Promise(r=>setTimeout(r,40));
 async function boot(options:{blocked?:boolean;anonymous?:boolean;failSend?:boolean;databaseLimit?:boolean;loginFirst?:boolean;discoveryPausedUntil?:string;outreachPaused?:boolean;discoveryPaused?:boolean}={}){
  const lead={id:'l1',company:'Pump Specialists',email:'team@pumps.example',city:'Leeds',country:'GB',status:'review',verification:'valid',eligibility:'pending',verification_note:'Previously checked address',eligibility_note:'',timezone:'Europe/London',contact_name:'Jane',contact_evidence:JSON.stringify({profileUrl:'https://www.linkedin.com/in/jane-fixture/'}),last_sent_at:null,next_followup_at:null,followup_count:0};
- const draft={id:'d1',lead_id:'l1',company:lead.company,subject:'A pump enquiry example',body:'Your catalogue lists pressure ratings. I can make a pressure-rating quote checklist for free.',artifact:'',evidence:'[]',warnings:'[]',rationale:'Collect pump pressure details',version:1,status:'pending',kind:'initial',sendIssues:[]};
+ const draft={id:'d1',lead_id:'l1',company:lead.company,subject:'A pump enquiry example',body:'Your catalogue lists pressure ratings. Prepyr could help review one table of pump specifications.',artifact:'',evidence:'[]',warnings:'[]',rationale:'Collect pump pressure details',version:1,status:'pending',kind:'initial',sendIssues:[]};
  const data={locationOptions,settings:{...defaults,outreachPaused:!!options.outreachPaused,discoveryPaused:!!options.discoveryPaused,discoveryPausedUntil:options.discoveryPausedUntil||'',businessAddress:options.blocked?'':'A test business address'},connections:{sendingEnabled:!options.blocked,automationEnabled:true},budgets:[],drafts:[draft],leads:[lead],messages:[],jobs:[],events:[],runs:[],notifications:[],expenses:[]};
  const requests:any[]=[],dom=new JSDOM(html,{url:'https://outreach.example.com',runScripts:'outside-only'}),doc=dom.window.document;
  (dom.window.HTMLDialogElement.prototype as any).showModal=function(){this.open=true;};(dom.window.HTMLDialogElement.prototype as any).close=function(){this.open=false;};
@@ -20,7 +20,7 @@ async function boot(options:{blocked?:boolean;anonymous?:boolean;failSend?:boole
   if(options.databaseLimit)return Response.json({error:'You are signed in. Workspace data is temporarily unavailable. Database daily limit resets at 05:30 IST (00:00 UTC).',code:'DATABASE_DAILY_LIMIT'},{status:503});
   if(path==='/api/prospects/l1')return Response.json({lead,drafts:[draft],messages:[]});
   if(path.startsWith('/api/prospects?'))return Response.json({rows:[{...lead,draft_id:'d1',email_status:draft.status==='sent'?'sent':'pending'}],counts:{sent:draft.status==='sent'?1:0,pending:1,contacted:0,followup:0,replied:0,attention:0},total:1,offset:0,hasMore:false});
-  if(path.endsWith('/preview'))return Response.json({body:draft.body+'\n\nRushi\nAddress\nUnsubscribe'});
+  if(path.endsWith('/preview'))return Response.json({message:draft.body+'\n\nRushi',body:draft.body+'\n\nRushi',senderName:'Rushi',product:{name:'Prepyr',website:'https://prepyr.com/'},unsubscribeUrl:'https://outreach.example.com/unsubscribe?id=l1'});
   if(path.endsWith('/edit')){const b=JSON.parse(init.body);Object.assign(draft,{subject:b.subject,body:b.body,artifact:b.artifact,version:draft.version+1});return Response.json({ok:true});}
   if(path.endsWith('/approve')){if(options.failSend)return Response.json({error:'Draft changed. Refresh and try again.'},{status:400});draft.status='sent';return Response.json({status:'sent',message:'Sent through Gmail.'});}
   if(path.startsWith('/api/settings/')){data.settings={...data.settings,...JSON.parse(init.body)};return Response.json({ok:true,settings:data.settings,connections:data.connections});}
@@ -86,5 +86,19 @@ test('search sends the entered per-search cap and rejects invalid counts before 
  const {dom,doc,click,requests}=await boot();try{
   const field=doc.querySelector('[name="searchTarget"]') as HTMLInputElement;field.value='25';field.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await click('[data-action="discover"]');assert.equal(requests.find(r=>r.path==='/api/discover').body.target,25);
   const fresh=doc.querySelector('[name="searchTarget"]') as HTMLInputElement;fresh.value='0';fresh.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await click('[data-action="discover"]');assert.equal(requests.filter(r=>r.path==='/api/discover').length,1);
+ }finally{dom.window.close();}
+});
+
+
+test('opening a saved email immediately shows clickable product mentions and edits update that visible message',async()=>{
+ const {dom,doc,click,requests}=await boot();try{
+  await click('[data-open]');const preview=doc.querySelector('#email-preview')!;
+  assert.equal(preview.closest('details'),null);assert.equal(preview.querySelector('iframe'),null);
+  const product=preview.querySelector('a[href="https://prepyr.com/"]')!;assert.equal(product.textContent,'Prepyr');assert.equal(product.getAttribute('target'),'_blank');assert.equal(product.getAttribute('rel'),'noopener noreferrer');
+  assert.equal(doc.querySelector('.email-editor')!.hasAttribute('open'),false);
+  const body=doc.querySelector('[name="body"]') as HTMLTextAreaElement;body.value='Prepyr & <img src=x onerror=alert(1)> could help. Write to hello@prepyr.com. PrepyrData stays plain.';body.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+  assert.equal(preview.querySelectorAll('a[href="https://prepyr.com/"]').length,1);assert.equal(preview.querySelector('img'),null);assert.match(preview.textContent!,/hello@prepyr.com/);assert.match(preview.textContent!,/PrepyrData stays plain/);
+  assert.equal(requests.filter(r=>r.path.endsWith('/edit')).length,0);await click('#draft-form button[type=submit]');assert.equal(requests.filter(r=>r.path.endsWith('/edit')).length,1);
+  assert.ok(doc.querySelector('#email-preview a[href="https://prepyr.com/"]'));
  }finally{dom.window.close();}
 });

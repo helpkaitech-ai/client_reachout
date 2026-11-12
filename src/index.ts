@@ -8,7 +8,7 @@ import {backupStatus,forwardBackupImport,savedWorkspace,refreshBackup,isD1Unavai
 import {backupTables} from './workspace-schema';
 import { approvalHash, approvalProblems, cleanEmail, publicUrl, validTimezone, validateSettings } from './policy';
 import { importLead, startDiscovery, searchHistory } from './discovery';
-import { notifyDigest, reconcile, signature, suppress, composedBody, composedHtml, productLink, unsubscribeUrl, sendApproved, syncInbox } from './mail';
+import { notifyDigest, reconcile, signature, suppress, composedBody, composedHtml, productLink, messageText, unsubscribeUrl, sendApproved, syncInbox } from './mail';
 import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
 export {ProductWorkspace} from './product-store';
@@ -207,7 +207,7 @@ async function readWorkspace(request:Request,env:Env,saved=false):Promise<Respon
  const preview=path.match(/^\/api\/drafts\/([^/]+)\/preview$/);
  if(preview&&request.method==='GET'){
   const d=await one<Draft>(env,'SELECT * FROM drafts WHERE id=?',preview[1]);if(!d)return json({error:'Not found'},404);
-  const s=await settings(env);return json({from:`${s.senderName} <${env.SENDER_EMAIL||''}>`,subject:d.subject,body:composedBody(d,s,await unsubscribeUrl(env,d.lead_id)),html:composedHtml(d,s,await unsubscribeUrl(env,d.lead_id),productLink(env)),senderName:s.senderName,unsubscribeUrl:await unsubscribeUrl(env,d.lead_id)});
+  const s=await settings(env);return json({from:`${s.senderName} <${env.SENDER_EMAIL||''}>`,subject:d.subject,message:messageText(d,s),product:productLink(env),body:composedBody(d,s,await unsubscribeUrl(env,d.lead_id)),html:composedHtml(d,s,await unsubscribeUrl(env,d.lead_id),productLink(env)),senderName:s.senderName,unsubscribeUrl:await unsubscribeUrl(env,d.lead_id)});
  }
  return json({error:'Not found'},404);
 }

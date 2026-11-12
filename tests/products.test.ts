@@ -171,6 +171,7 @@ test('product email preview and Gmail MIME use the same saved product link',asyn
   const lead=await readyLead(scope),draft=await readyDraft(scope,lead);draft.body='Your catalogue lists DIN flanges and your quotes need pressure ratings. FlangeFlow could help collect both.';
   const {approvalHash}=await import('../src/policy');await run(scope,`UPDATE drafts SET body=?,artifact='',approved_hash=? WHERE id=?`,draft.body,await approvalHash({...draft,artifact:''},lead,testSettings,scope.SENDER_EMAIL!),draft.id);
   const cookie=await login(env),response=await req(env,`/api/drafts/${draft.id}/preview?product=${p.id}`,undefined,cookie);assert.equal(response.status,200);const preview=await response.json() as any;
+  assert.equal(preview.product.name,'FlangeFlow');assert.equal(preview.product.website,'https://pumps.example.com/');assert.match(preview.message,/FlangeFlow/);
   assert.match(preview.html,/<a href="https:\/\/pumps.example.com\/"[^>]*>FlangeFlow<\/a>/);
   let sent='';globalThis.fetch=mockGoogle(body=>{sent=Buffer.from(body.raw,'base64url').toString();return Response.json({id:'fixture-sent',threadId:'fixture-thread'});});
   await sendApproved(scope,testSettings,draft.id);assert.ok(sent.replace(/\r\n/g,'').includes(Buffer.from(preview.html).toString('base64')));

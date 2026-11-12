@@ -14,7 +14,7 @@ export async function unsubscribeUrl(env:Env,leadId:string) {
  return `${env.APP_URL}/unsubscribe?id=${encodeURIComponent(leadId)}${env.PRODUCT_ID?'&product='+encodeURIComponent(env.PRODUCT_ID):''}&sig=${await signature(env,'unsubscribe:'+(env.PRODUCT_ID?env.PRODUCT_ID+':':'')+leadId)}`;
 }
 const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-function messageText(d:Draft,s:Settings){return `${d.body.trim()}${d.artifact.trim()?'\n\nFree sample\n'+d.artifact.trim():''}\n\n${s.senderName}`;}
+export function messageText(d:Draft,s:Settings){return `${d.body.trim()}${d.artifact.trim()?'\n\nFree sample\n'+d.artifact.trim():''}\n\n${s.senderName}`;}
 export function composedBody(d:Draft,s:Settings,_url:string){return messageText(d,s)+'\n\nTo unsubscribe, reply “unsubscribe”.';}
 export type ProductLink={name:string;website:string};
 export function productLink(env:Pick<Env,'PRODUCT_BRIEF'>):ProductLink|undefined{
