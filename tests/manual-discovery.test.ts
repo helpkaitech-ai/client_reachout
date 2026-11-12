@@ -27,21 +27,21 @@ test('Find prospects ignores retired campaign intervals and retains the current 
   const before=await settings(x.scope);assert.equal((await startDiscovery(x.scope,before,undefined,undefined,false)).state,'manual_only');
   const response=await x.manual();assert.equal(response.status,200);assert.equal((await response.json() as any).state,'queued');
   assert.equal(JSON.parse((await one<any>(x.scope,"SELECT payload FROM jobs WHERE kind='discover_search'"))!.payload).manual,true);
-  assert.equal((await settings(x.scope)).discoveryPaused,true);assert.equal((await product(x.env,x.p.id)).approved_revision,1);
+  assert.equal((await settings(x.scope)).discoveryPaused,undefined);assert.equal((await product(x.env,x.p.id)).approved_revision,1);
   assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,2);assert.equal((await all(x.scope,'SELECT * FROM ai_attempts')).length,0);
  }finally{x.close();}
 });
 
 test('a manual request remains available during an automatic-only pause and timed hold; its queued job executes',async()=>{
  const x=await setup({discoveryPaused:true,discoveryPausedUntil:new Date(Date.now()+6*86400000).toISOString()}),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
- try{const before=await settings(x.scope);assert.equal((await startDiscovery(x.scope,before,undefined,undefined,false)).state,'manual_only');assert.equal((await x.manual()).status,200);await tick(x.scope);assert.ok(ai.calls.length>0);assert.equal((await settings(x.scope)).discoveryPaused,true);assert.equal((await settings(x.scope)).discoveryPausedUntil,'');}finally{globalThis.fetch=original;x.close();}
+ try{const before=await settings(x.scope);assert.equal((await startDiscovery(x.scope,before,undefined,undefined,false)).state,'manual_only');assert.equal((await x.manual()).status,200);await tick(x.scope);assert.ok(ai.calls.length>0);assert.equal((await settings(x.scope)).discoveryPaused,undefined);assert.equal((await settings(x.scope)).discoveryPausedUntil,undefined);}finally{globalThis.fetch=original;x.close();}
 });
 
 test('explicit manual search and its research finish when automatic research is off, without starting unrelated work',async()=>{
  const x=await setup({researchAutomation:false,discoveryPaused:true}),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
  try{const unrelated=await readyLead(x.scope,{company:'Unrelated candidate',email:'unrelated@example.org',website:'https://unrelated.example.org'});assert.equal((await x.manual()).status,200);for(let i=0;i<12;i++)await tick(x.scope);
   assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal((await all(x.scope,'SELECT * FROM jobs WHERE lead_id=?',unrelated.id)).length,0);
-  assert.equal((await settings(x.scope)).researchAutomation,false);assert.equal((await settings(x.scope)).discoveryPaused,true);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+  assert.equal((await settings(x.scope)).researchAutomation,undefined);assert.equal((await settings(x.scope)).discoveryPaused,undefined);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=original;x.close();}
 });
 
@@ -65,6 +65,6 @@ test('editing targets never causes a manual click to search with a stale, unappr
  const x=await setup();try{const r=await x.req('/api/settings/preferences?product='+x.p.id,{...await settings(x.scope),customerDescription:'New target customers'},x.cookie);assert.equal(r.status,200);const response=await x.manual();assert.equal(response.status,200);assert.equal((await response.json() as any).state,'profiling');assert.equal((await product(x.env,x.p.id)).approved_revision,null);assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,0);}finally{x.close();}
 });
 
-test('manual search clears its workspace pause while respecting the Relay emergency stop',async()=>{
- const x=await setup({prospectingPaused:true});try{assert.equal((await x.manual()).status,200);await run(x.scope,"UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('false'))");await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true}));assert.equal((await x.manual()).status,400);assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,1);}finally{x.close();}
+test('manual search ignores legacy workspace and global pause flags',async()=>{
+ const x=await setup({prospectingPaused:true});try{assert.equal((await x.manual()).status,200);await run(x.scope,"UPDATE settings SET data=json_set(data,'$.prospectingPaused',json('false'))");await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true}));assert.equal((await x.manual()).status,200);assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,1);}finally{x.close();}
 });

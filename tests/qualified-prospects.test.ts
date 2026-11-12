@@ -141,9 +141,9 @@ test('twelve distinct qualified prospects complete a cycle; rejected candidates 
  }finally{x.close();}
 });
 
-test('a paused workspace cannot create replacement searches or incur provider work',async()=>{
+test('legacy pause settings cannot block an explicit search; idle ticks do not spend',async()=>{
  const x=await setup({prospectingPaused:true,discoveryPaused:true}),original=globalThis.fetch;let calls=0;globalThis.fetch=(async()=>{calls++;throw Error('No live provider allowed');}) as typeof fetch;
- try{await tick(x.scope);await assert.rejects(startDiscovery(x.scope,await settings(x.scope)),/paused/i);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,0);assert.equal(calls,0);}finally{globalThis.fetch=original;x.close();}
+ try{await tick(x.scope);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);assert.equal(calls,0);}finally{globalThis.fetch=original;x.close();}
 });
 
 for(const {automatic,rejectedBatches} of [{automatic:true,rejectedBatches:1},{automatic:false,rejectedBatches:1},{automatic:false,rejectedBatches:7}])test('an explicitly requested campaign with legacy automation '+automatic+' replaces '+rejectedBatches*4+' rejected candidates with twelve distinct fully drafted prospects without sending',async()=>{

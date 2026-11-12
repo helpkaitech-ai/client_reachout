@@ -12,20 +12,18 @@ import {publicUrl,digest} from './policy';
 import {contactSchema,supportedContact,appropriatePublicEmail} from './intelligence';
 import {fitSignalSchema,productUseCases,productFitProblems,productFitInstructions} from './product-fit';
 import {requireProductReady} from './products';
-import {assertProspectingRunning} from './outreach-control';
 import {assertProviderAvailable} from './provider-control';
 import {prepareDiscoveryCycle} from './discovery-cycles';
 import {discoveryQueries,discoveryStrategy} from './discovery-plan';
 import {sourcePages,citedPages,pageEvidence,evidenceSources,groundedExcerpt} from './source-pages';
 export {importLead} from './leads';
-export function discoveryPause(s:Settings){return Date.parse(s.discoveryPausedUntil||'')>Date.now()?s.discoveryPausedUntil:null;}
 
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,productFit:fitSignalSchema,company:str,contact_name:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},contactScope:{type:'string',enum:['organization','public_professional','private_consumer']},sensitivePersonalTarget:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
 export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=true,continuation=false){
  const owner=await acquire(env,'discovery-enqueue',60);
- if(!owner)return {state:'queued',runId:undefined,message:'A prospect search request is already being queued. Results appear automatically.'};
+ if(!owner)return {state:'queued',runId:undefined,message:'Search already queued.'};
  try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation);}finally{await release(env,'discovery-enqueue',owner);}
 }
 async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean){
@@ -33,12 +31,10 @@ async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,i
  if(!manual)return {state:'manual_only',message:'Click Find prospects to start a search. Recurring searches are disabled.'};
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) AND created_at>=? ORDER BY created_at LIMIT 1",now().slice(0,10)+'T00:00:00.000Z');
- if(active&&(!intent||env.PRODUCT_ID))return {state:active.state,runId:active.id,message:'Your prospect search is already queued or running. Results appear automatically.'};
- if(env.PRODUCT_ID)await assertProspectingRunning(env);
+ if(active&&(!intent||env.PRODUCT_ID))return {state:active.state,runId:active.id,message:'Search in progress.'};
  const cycle=await prepareDiscoveryCycle(env,s,manual,continuation);
  const reasons={manual_only:'Click Find prospects to start today’s search. Recurring searches are disabled.',daily_target:`This workspace has reached its ${s.dailyLeadLimit} distinct qualified prospects for today. The allowance resets at 00:00 UTC; click Find prospects on a new day.`,research_limit:`Used ${s.dailyResearchLimit} candidate research attempts today. Increase the research allowance to keep replacing rejected candidates.`,researching:'The requested campaign is researching candidates and will search for replacements as needed.',search_limit:'The bounded search allowance was reached before the qualified target. Review targeting, locations and the research allowance.'};
  if(cycle&&cycle.state!=='ready')return {state:cycle.state,message:reasons[cycle.state]};
- if(!env.PRODUCT_ID)await assertProspectingRunning(env);
  await assertProviderAvailable(env);
  const history=await searchHistory(env),searchIndex=history.reduce((n,h)=>n+Number(h.uses),0),cases=productUseCases(env),useCase=cases[searchIndex%cases.length];
  const base=selected||(env.PRODUCT_ID?nextProductCampaign(s,history):nextCampaign(s,history));
@@ -50,7 +46,7 @@ async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,i
   env.DB.prepare("INSERT OR IGNORE INTO jobs(id,kind,payload,created_at,updated_at) VALUES(?,'discover_search',?,?,?)").bind(jobId,JSON.stringify({batchId:id,campaign,emailFirst:true,manual:true,campaignDay:now().slice(0,10),cycleId:cycle.cycleId,maximumCandidates:cycle?.state==='ready'?cycle.capacity:Math.min(10,s.discoveryResults)}),at,at),
   ...(cycle?.state==='ready'?[env.DB.prepare('INSERT OR IGNORE INTO discovery_cycle_batches(batch_id,cycle_id) VALUES(?,?)').bind(id,cycle.cycleId)]:[])
  ]);
- return {state:'queued',runId:id,message:`Searching in ${campaign.location} toward ${s.dailyLeadLimit} distinct qualified prospects today. Background research replaces rejected candidates within the research and budget allowances.`};
+ return {state:'queued',runId:id,message:`Searching in ${campaign.location}…`};
 }
 export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
  requireProductReady(env);

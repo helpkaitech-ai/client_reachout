@@ -6,22 +6,20 @@ import {cleanEmail,publicUrl,validTimezone,validateSettings} from './policy';
 import {openai,outputText,UncertainProviderError} from './providers';
 import {StageYield} from './ai';
 import {objectSchema,textField as str,researchSecurity,collectSources,listedSource,productQualificationPolicy} from './evidence';
-import {controlProspecting,assertOutreachRunning,OutreachPaused} from './outreach-control';
 import {useCaseSchema,validUseCases,supportedCapability,productFitInstructions} from './product-fit';
 import {providerBlock,OpenAICreditBlocked,assertProviderAvailable} from './provider-control';
 
 export async function product(env:Env,id:string){const p=await one<Product>(env,'SELECT * FROM products WHERE id=?',id);if(!p)throw new Error('Product not found');return p;}
 export async function productList(env:Env){
  const products=await all<Product>(env,"SELECT * FROM products WHERE state<>'archived' ORDER BY created_at,id");
- return Promise.all(products.map(async p=>{const row=await one<{paused:number}>({...env,DB:productDatabase(env,p.id)},"SELECT json_extract(data,'$.prospectingPaused') paused FROM settings WHERE id=1");return {...p,prospecting_paused:row?.paused!==0};}));
+ return products;
 }
 export async function scopeProduct(root:Env,p:Product):Promise<Env>{
- const db=productDatabase(root,p.id),approved=p.state==='approved'&&p.approved_revision===p.revision&&p.enabled===1;
+ const db=productDatabase(root,p.id),approved=p.state==='approved'&&p.approved_revision===p.revision;
  const brief=JSON.stringify({name:p.name,website:p.website,description:p.description,remarks:p.remarks,approvedCustomerProfile:JSON.parse(p.analysis||'{}')});
  const env={...root,DB:db,GLOBAL_DB:root.GLOBAL_DB||root.DB,PRODUCT_ID:p.id,PRODUCT_NAME:p.name,PRODUCT_BRIEF:brief,PRODUCT_APPROVED:approved,PRODUCT_REVISION:p.revision,SENDER_EMAIL:p.sender_email,WORKSPACE_BACKUP:undefined};
  const base=await settings(root);
- env.OUTREACH_PAUSED=base.outreachPaused===true;
- await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,researchAutomation:false,prospectingPaused:false,discoveryPaused:true,campaigns:[],offerContext:p.description}));
+ await run(env,'INSERT OR IGNORE INTO settings(id,data) VALUES(1,?)',JSON.stringify({...defaults,senderName:base.senderName,businessAddress:base.businessAddress,providerPolicyConfirmed:base.providerPolicyConfirmed,sendStartHour:base.sendStartHour,sendEndHour:base.sendEndHour,sendWeekends:base.sendWeekends,campaigns:[],offerContext:p.description}));
  const local=await settings(env);
  // Older releases stored an internal product brief in the editable offer field.
  // Convert only that recognized generated shape; preserve owner-authored offers.
@@ -35,7 +33,7 @@ export async function assertProductCurrent(env:Env){
  if(!env.PRODUCT_ID)return;
  requireProductReady(env);
  const current=await one<Product>({...env,DB:env.GLOBAL_DB!},'SELECT * FROM products WHERE id=?',env.PRODUCT_ID);
- if(!current||current.state!=='approved'||!current.enabled||current.revision!==env.PRODUCT_REVISION||current.approved_revision!==current.revision||current.sender_email!==env.SENDER_EMAIL)throw new Error('Product details, sender or approval changed. Reload the current product workspace.');
+ if(!current||current.state!=='approved'||current.revision!==env.PRODUCT_REVISION||current.approved_revision!==current.revision||current.sender_email!==env.SENDER_EMAIL)throw new Error('Product details, sender or approval changed. Reload the current product workspace.');
 }
 function validateAssets(images:any){
  if(!Array.isArray(images)||images.length>3)throw new Error('Upload up to three screenshots');
@@ -59,25 +57,25 @@ export async function saveProduct(env:Env,input:any,id?:string){
   if(!changed.meta.changes)throw new Error('Product changed; reload before saving');
  }else await run(env,'INSERT INTO products(id,name,website,description,remarks,sender_email,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',key,name,website,description,remarks,sender,at,at);
  const p=await product(env,key),scoped=await scopeProduct(env,p),local=await settings(scoped);
- const preferences={...local,...customerInput,offerContext:!old||local.offerContext===old.description?description:local.offerContext,prospectingPaused:false,discoveryPaused:true};
+ const preferences={...local,...customerInput,offerContext:!old||local.offerContext===old.description?description:local.offerContext};
  const ops=[scoped.DB.prepare('UPDATE settings SET data=? WHERE id=1').bind(JSON.stringify(preferences)),scoped.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(at),scoped.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Product details changed; review or improve this draft against the refreshed profile',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(at)];
  ops.push(scoped.DB.prepare("DELETE FROM integration_state WHERE key='manual_search_request'"));
  if(images){ops.push(scoped.DB.prepare('DELETE FROM product_assets'));for(const image of images)ops.push(scoped.DB.prepare('INSERT INTO product_assets VALUES(?,?,?)').bind(image.id,image.name,image.data));}
  await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; the next search generates and applies its profile automatically');return p;
 }
-export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,prospecting_paused:s.prospectingPaused===true,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
+export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
 export async function requestProductDiscovery(env:Env){
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
  const root={...env,DB:env.GLOBAL_DB!},p=await product(root,env.PRODUCT_ID!);
- await assertOutreachRunning(root);await assertProviderAvailable(env);
- if(!p.enabled)throw new Error('Enable this product before finding prospects');
+ await assertProviderAvailable(env);
+ if(p.state==='archived')throw new Error('This product is archived');
+ if(!p.enabled)await run(root,'UPDATE products SET enabled=1 WHERE id=?',p.id);
  const scope=await scopeProduct(root,p);
- await controlProspecting(scope,false);
  await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({revision:p.revision,day:day()}));
  if(p.state==='target_review'){await approveProduct(root,p.id,p.revision);return continueProductDiscovery(root,await product(root,p.id));}
  if(p.state==='approved'&&p.approved_revision===p.revision)return continueProductDiscovery(root,p);
  await queueProductAnalysis(root,p.id);
- return {state:'profiling',message:'Generating and applying the product profile automatically. Your requested prospect search will then continue in the background; no profile approval is needed.'};
+ return {state:'profiling',message:'Preparing product profile. Search will start automatically.'};
 }
 export async function continueProductDiscovery(root:Env,p:Product){
  const scope=await scopeProduct(root,p),row=await one<{value:string}>(scope,"SELECT value FROM integration_state WHERE key='manual_search_request'");
@@ -90,12 +88,6 @@ export async function continueProductDiscovery(root:Env,p:Product){
  const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true);
  if(['queued','running','researching','daily_target'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");
  return result;
-}
-export async function controlProductProspecting(env:Env,id:string,paused:boolean){
- if(typeof paused!=='boolean')throw new Error('Choose whether prospecting is paused');
- const p=await product(env,id);
- if(!paused){await assertOutreachRunning(env);if(!p.enabled||p.state!=='approved'||p.approved_revision!==p.revision)throw new Error('Approve the current target profile before resuming prospects');}
- return controlProspecting(await scopeProduct(env,p),paused);
 }
 async function searchDiagnostics(env:Env){
  const batches=await all<any>(env,'SELECT * FROM discovery_batches ORDER BY created_at DESC LIMIT 3'),result=[];
@@ -149,16 +141,15 @@ export async function advanceProductAnalysis(root:Env,p:Product){
  }catch(e){
   const error=e instanceof Error?e.message:'Product research failed';
   if(e instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=?",now(),jobId);return;}
-  if(e instanceof OutreachPaused){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=?",now(),jobId);return;}
   const state=e instanceof BudgetPaused?'paused':e instanceof OpenAICreditBlocked||/credit_balance_exhausted|insufficient_quota|billing_hard_limit_reached/.test(error)?'paused_provider':e instanceof UncertainProviderError?'uncertain':'failed';
   await run(env,'UPDATE jobs SET state=?,error=?,updated_at=? WHERE id=?',state,error,now(),jobId);
   await run(root,"UPDATE products SET state=?,error=?,updated_at=? WHERE id=? AND revision=?",state==='paused'?'analyzing':state,error,now(),p.id,p.revision);
  }
 }
 export async function approveProduct(env:Env,id:string,revision:number){
- const p=await product(env,id);if(p.revision===revision&&p.state==='approved'&&p.approved_revision===revision)return {ok:true};if(p.revision!==revision||p.state!=='target_review')throw new Error('Review the current OpenAI target profile before approval');
+ const p=await product(env,id);if(p.revision===revision&&p.state==='approved'&&p.approved_revision===revision)return {ok:true};if(p.revision!==revision||p.state!=='target_review')throw new Error('Product profile is still being prepared');
  const analysis=JSON.parse(p.analysis),scope=await scopeProduct(env,p),s=await settings(scope);
  await run(scope,'UPDATE settings SET data=? WHERE id=1',JSON.stringify({...s,campaigns:analysis.campaigns}));
- const changed=await run(env,"UPDATE products SET state='approved',approved_revision=revision,error=NULL,updated_at=? WHERE id=? AND revision=? AND state='target_review'",now(),id,revision);if(!changed.meta.changes)throw new Error('Product changed before approval');
+ const changed=await run(env,"UPDATE products SET state='approved',approved_revision=revision,error=NULL,updated_at=? WHERE id=? AND revision=? AND state='target_review'",now(),id,revision);if(!changed.meta.changes)throw new Error('Product changed. Search again.');
  await audit(env,'product_target_approved',id,'Generated product profile applied automatically; no email approved');return {ok:true};
 }

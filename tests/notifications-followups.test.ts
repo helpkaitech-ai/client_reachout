@@ -134,3 +134,15 @@ test('real notification dropdown shows escaped previews, persists read state and
   (doc.querySelector('#notifications-read-all') as HTMLElement).click();await until(()=>doc.querySelector('#notification-count')!.textContent==='0');assert.equal((await notificationPage(env)).unread,0);
  }finally{dom?.window.close();close();}
 });
+
+test('digest is two concise lines, counts only ready emails and skips empty or duplicate updates',async()=>{
+ const {env,close}=database(),original=globalThis.fetch,sent:string[]=[];Object.assign(env,{ENABLE_NOTIFICATIONS:'true',TELEGRAM_BOT_TOKEN:'mock-token',TELEGRAM_CHAT_ID:'mock-chat'});
+ globalThis.fetch=(async(url:any,init:any)=>{assert.match(String(url),/^https:\/\/api.telegram.org\//);sent.push(JSON.parse(init.body).text);return Response.json({ok:true});}) as typeof fetch;
+ try{
+  const {notifyDigest}=await import('../src/mail');await notifyDigest(env,testSettings);assert.equal(sent.length,0);
+  const held=await readyDraft(env,await readyLead(env));await run(env,"UPDATE drafts SET status='pending',quality_hold='Not qualified' WHERE id=?",held.id);
+  await notifyDigest(env,testSettings);assert.equal(sent.length,0);
+  const ready=await readyDraft(env,await readyLead(env,{company:'Another',email:'another@example.com'}));await run(env,"UPDATE drafts SET status='pending' WHERE id=?",ready.id);
+  await notifyDigest(env,testSettings);await notifyDigest(env,testSettings);assert.equal(sent.length,1);assert.equal(sent[0],`Relay: 1 drafts ready\n${env.APP_URL}`);assert.equal(sent[0].split('\n').length,2);
+ }finally{globalThis.fetch=original;close();}
+});

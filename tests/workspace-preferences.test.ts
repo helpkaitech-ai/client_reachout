@@ -5,7 +5,7 @@ import {JSDOM} from 'jsdom';
 import worker from '../src/index';
 import {database,testSettings,readyLead,readyDraft} from './helpers';
 import {all,one,run,settings,now} from '../src/db';
-import {saveProduct,product,productDetail,scopeProduct,queueProductAnalysis,advanceProductAnalysis,approveProduct,controlProductProspecting} from '../src/products';
+import {saveProduct,product,productDetail,scopeProduct,queueProductAnalysis,advanceProductAnalysis,approveProduct} from '../src/products';
 import {openai} from '../src/providers';
 import {nextProductCampaign} from '../src/locations';
 import {startDiscovery,importLead} from '../src/discovery';
@@ -27,9 +27,9 @@ test('sender, locations, customer targeting, offers, portfolio, budgets and dail
   const scope=await scopeProduct(env,await product(env,a.id)),s=await settings(scope),next={...s,offerContext:'Editing workflow product; no free trial',portfolio:'Portfolio A; $19 per month',customerTypes:['b2b','agencies'],customerDescription:'Small video editing agencies',customerComments:'Prefer independent studios; exclude wedding venues',dailyLeadLimit:3,dailyResearchLimit:4,dailyNewLimit:2,dailyTotalLimit:3,openaiBudget:7,discoveryResults:2,discoveryIntervalDays:9,sendStartHour:10,sendEndHour:16,followupDays:[5,12],sendWeekends:false,providerPolicyConfirmed:false};
   const response=await req(env,'/api/settings/preferences?product='+a.id,next,cookie);assert.equal(response.status,200);assert.equal((await response.json() as any).profileChanged,true);
   const saved=await settings(await scopeProduct(env,await product(env,a.id))),other=await settings(await scopeProduct(env,b));
-  for(const key of Object.keys(next) as (keyof typeof next)[])if(!['campaigns','researchAutomation','outreachPaused'].includes(key))assert.deepEqual(saved[key],next[key],key);
+  for(const key of Object.keys(next) as (keyof typeof next)[])if(!['campaigns','researchAutomation','outreachPaused','discoveryIntervalDays'].includes(key))assert.deepEqual(saved[key],next[key],key);
   assert.equal(saved.senderName,'Agency sender');assert.equal(saved.businessAddress,'Product A address');assert.equal((await product(env,a.id)).sender_email,'alias@example.org');
-  assert.equal(other.senderName,testSettings.senderName);assert.equal(other.offerContext,b.description);assert.equal(other.portfolio,'');assert.equal(other.openaiBudget,50);assert.equal(other.discoveryIntervalDays,6);assert.deepEqual(other.customerTypes,[]);assert.deepEqual(other.locationIds,['worldwide']);assert.equal(JSON.stringify(await settings(env)),root);
+  assert.equal(other.senderName,testSettings.senderName);assert.equal(other.offerContext,b.description);assert.equal(other.portfolio,'');assert.equal(other.openaiBudget,50);assert.equal(other.discoveryIntervalDays,undefined);assert.deepEqual(other.customerTypes,[]);assert.deepEqual(other.locationIds,['worldwide']);assert.equal(JSON.stringify(await settings(env)),root);
   assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
   const da=await(await req(env,'/api/dashboard?summary=1&product='+a.id,undefined,cookie)).json() as any,db=await(await req(env,'/api/dashboard?summary=1&product='+b.id,undefined,cookie)).json() as any;
   for(const key of ['gmail','openai','telegram','notificationEmail'])assert.deepEqual(da.connections[key],db.connections[key]);assert.equal(da.connections.sender,'alias@example.org');assert.equal(db.connections.sender,'data@prepyr.com');
@@ -42,7 +42,7 @@ test('targeting changes invalidate stale approvals and preserve sent history, wh
   let response=await req(env,'/api/settings/preferences?product='+a.id,{...await settings(scope),openaiBudget:10,dailyResearchLimit:5,discoveryIntervalDays:8},cookie);assert.equal(response.status,200);assert.equal((await response.json() as any).profileChanged,false);assert.equal((await product(env,a.id)).state,'approved');
   const sentLead=await readyLead(scope,{company:'Sent',website:'https://sent.example.org',email:'sent@example.org'}),sent=await readyDraft(scope,sentLead);await run(scope,"UPDATE drafts SET status='sent' WHERE id=?",sent.id);
   response=await req(env,'/api/settings/preferences?product='+a.id,{...await settings(scope),customerTypes:['agencies'],customerDescription:'Video production agencies'},cookie);assert.equal(response.status,200);
-  const p=await product(env,a.id);assert.equal(p.state,'draft');assert.equal(p.revision,a.revision+1);assert.equal(p.approved_revision,null);assert.equal((await settings(scope)).prospectingPaused,false);
+  const p=await product(env,a.id);assert.equal(p.state,'draft');assert.equal(p.revision,a.revision+1);assert.equal(p.approved_revision,null);assert.equal((await settings(scope)).prospectingPaused,undefined);
   const held=await one<any>(scope,'SELECT * FROM drafts WHERE id=?',draft.id);assert.equal(held.body,draft.body);assert.equal(held.status,'pending');assert.equal(held.approved_hash,null);assert.match(held.quality_hold,/targeting/);assert.equal((await one<any>(scope,'SELECT status FROM drafts WHERE id=?',sent.id)).status,'sent');
   await assert.rejects(openai(scope,testSettings,'x','x','stale',{search:true,stage:'business_research',workflow:{jobId:'stale',paidCalls:0}}),/changed/);assert.equal((await product(env,b.id)).revision,b.revision);
  }finally{close();}
@@ -55,9 +55,9 @@ test('customer inputs on product creation are validated, exposed for editing and
   const p=await saveProduct(env,{...input,customerTypes:['b2b','startups'],customerDescription:'Pump supply startups',customerComments:'Prioritize specification workflows'}),scope=await scopeProduct(env,p);
   await run(scope,"UPDATE settings SET data=json_set(data,'$.offerContext',?,'$.portfolio',?,'$.researchAutomation',json('false'))",'Owner product offer; no free trials','Portfolio and pricing: $29/month');
   await queueProductAnalysis(env,p.id);await advanceProductAnalysis(env,await product(env,p.id));await advanceProductAnalysis(env,await product(env,p.id));await approveProduct(env,p.id,p.revision);
-  const detail=await productDetail(env,p.id);assert.deepEqual(detail.product.customerTypes,['b2b','startups']);assert.equal(detail.product.customerDescription,'Pump supply startups');assert.equal(detail.settings.offerContext,'Owner product offer; no free trials');assert.equal(detail.settings.portfolio,'Portfolio and pricing: $29/month');assert.equal(detail.settings.researchAutomation,false);
+  const detail=await productDetail(env,p.id);assert.deepEqual(detail.product.customerTypes,['b2b','startups']);assert.equal(detail.product.customerDescription,'Pump supply startups');assert.equal(detail.settings.offerContext,'Owner product offer; no free trials');assert.equal(detail.settings.portfolio,'Portfolio and pricing: $29/month');assert.equal(detail.settings.researchAutomation,undefined);
   assert.ok(ai.calls.every(c=>c.instructions.includes('Pump supply startups')&&c.instructions.includes('Prioritize specification workflows')&&c.instructions.includes('$29/month')));
-  const fresh=await scopeProduct(env,await product(env,p.id));await controlProductProspecting(env,p.id,false);await readyLead(fresh);await scheduleResearch(fresh);for(let i=0;i<9;i++)await processAvailableJobs(fresh,{...await settings(fresh),researchAutomation:true});
+  const fresh=await scopeProduct(env,await product(env,p.id));await readyLead(fresh);await scheduleResearch(fresh);for(let i=0;i<9;i++)await processAvailableJobs(fresh,{...await settings(fresh),researchAutomation:true});
   assert.ok(await one(fresh,'SELECT id FROM drafts'));assert.ok(ai.calls.filter(c=>c.text?.format.name==='relay_draft_generate').every(c=>c.instructions.includes('Pump supply startups')&&c.instructions.includes('$29/month')));
  }finally{globalThis.fetch=original;close();}
 });
@@ -101,7 +101,7 @@ test('actual Settings UI keeps the selected tab while switching products and sav
   const values={offerContext:'Video editing product for agencies',portfolio:'Portfolio A; $19/month',customerDescription:'Small editing studios',customerComments:'Exclude wedding venues'};
   for(const [key,value]of Object.entries(values))(doc.querySelector('#settings-form [name="'+key+'"]') as HTMLTextAreaElement).value=value;
   (doc.querySelector('#settings-form [name="customerTypes"][value="agencies"]') as HTMLInputElement).checked=true;
-  (doc.querySelector('#settings-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('profile'));
+  (doc.querySelector('#settings-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('Saved'));
   const stored=await settings(await scopeProduct(env,await product(env,a.id)));assert.deepEqual(stored.customerTypes,['agencies']);assert.equal(stored.offerContext,values.offerContext);
   select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=b.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Settings');assert.equal((doc.querySelector('[name="offerContext"]') as HTMLTextAreaElement).value,b.description);assert.equal((doc.querySelector('[name="portfolio"]') as HTMLTextAreaElement).value,'');assert.equal(doc.querySelector('a[download]')!.getAttribute('href'),'/api/export?product='+b.id);
   click('[data-view="dashboard"]');await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Dashboard');select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Dashboard');assert.ok(paths.some(p=>p.includes('/api/settings/preferences?product='+a.id)));assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);
@@ -126,10 +126,10 @@ test('Find prospects with changed product locations queues automatic profile gen
  const {env,close}=database(),base=env.APP_URL!,dom=new JSDOM(fs.readFileSync('public/index.html','utf8'),{url:base,runScripts:'outside-only'}),doc=dom.window.document,paths:string[]=[];env.OPENAI_API_KEY='mock';
  const until=async(fn:()=>boolean)=>{for(let i=0;i<150;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Location change UI timed out');};
  try{
-  const [a]=await pair(env);await manualApprove(env,a.id);await controlProductProspecting(env,a.id,false);const cookie=await login(env);
+  const [a]=await pair(env);await manualApprove(env,a.id);const cookie=await login(env);
   (dom.window as any).fetch=(path:string,init:any)=>{paths.push(path);return worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);};
   dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));const select=doc.querySelector('#product-switch') as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Prospects');
   const city=doc.querySelector('[name="locationIds"][value="city:mumbai"]') as HTMLInputElement;city.checked=true;city.dispatchEvent(new dom.window.Event('change',{bubbles:true}));(doc.querySelector('[data-action="discover"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('profile'));
-  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),true);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,false);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
+  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),true);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,undefined);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
  }finally{dom.window.close();close();}
 });

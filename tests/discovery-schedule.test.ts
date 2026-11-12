@@ -22,7 +22,7 @@ test('one product search request generates and applies its profile and then queu
  const x=database(),original=globalThis.fetch,ai=mockOpenAI();Object.assign(x.env,{OPENAI_API_KEY:'mock',AI_STAGES_PER_CYCLE:'3'});globalThis.fetch=ai.fetcher;
  try{
   const p=await saveProduct(x.env,{name:'Pump product',website:'https://pumps.example.com',description:'Quotation workflow product',sender_email:'data@prepyr.com'});
-  const scope=await scopeProduct(x.env,p);assert.equal((await settings(scope)).prospectingPaused,false);
+  const scope=await scopeProduct(x.env,p);assert.equal((await settings(scope)).prospectingPaused,undefined);
   assert.equal((await requestProductDiscovery(scope))?.state,'profiling');assert.equal(ai.calls.length,0);
   for(let i=0;i<4;i++)await tickWorkspaces(x.env);
   const fresh=await product(x.env,p.id);assert.equal(fresh.state,'approved');assert.equal(fresh.approved_revision,fresh.revision);
@@ -52,8 +52,8 @@ test('new products retain independent targets and research capacity without a wo
  const x=database();try{
   await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,prospectingPaused:true}));
   const p=await saveProduct(x.env,{name:'Product',website:'https://pumps.example.com',description:'Quote product',sender_email:'data@prepyr.com'}),s=await settings(await scopeProduct(x.env,p));
-  assert.equal(s.prospectingPaused,false);assert.equal(s.discoveryPaused,true);assert.equal(s.dailyLeadLimit,12);assert.equal(s.dailyResearchLimit,60);
-  assert.equal((await settings(x.env)).prospectingPaused,true);
+  assert.equal(s.prospectingPaused,undefined);assert.equal(s.discoveryPaused,undefined);assert.equal(s.dailyLeadLimit,12);assert.equal(s.dailyResearchLimit,60);
+  assert.equal((await settings(x.env)).prospectingPaused,undefined);
  }finally{x.close();}
 });
 
@@ -79,7 +79,7 @@ test('manual-mode migration unpauses research without dispatching older email ap
   await run(x.env,"UPDATE drafts SET status='sent' WHERE id=?",sent.id);
   await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify({...testSettings,outreachPaused:true,prospectingPaused:true,dailyResearchLimit:20,openaiBudget:7}));
   x.sqlite.exec(readFileSync('migrations/0012_manual_discovery.sql','utf8'));
-  const s=await settings(x.env);assert.equal(s.outreachPaused,false);assert.equal(s.prospectingPaused,false);assert.equal(s.dailyResearchLimit,60);assert.equal(s.openaiBudget,7);
+  const s=await settings(x.env);assert.equal(s.outreachPaused,undefined);assert.equal(s.prospectingPaused,undefined);assert.equal(s.dailyResearchLimit,60);assert.equal(s.openaiBudget,7);
   const updated=await one<any>(x.env,'SELECT * FROM drafts WHERE id=?',draft.id);
   assert.equal(updated.status,'pending');assert.equal(updated.approved_hash,null);assert.equal(updated.body,draft.body);
   assert.equal((await one<any>(x.env,'SELECT status FROM drafts WHERE id=?',sent.id))!.status,'sent');

@@ -29,7 +29,7 @@ test('product analysis uses screenshots and remarks, and profile is automaticall
   await queueProductAnalysis(env,p.id);await advanceProductAnalysis(env,await product(env,p.id));await advanceProductAnalysis(env,await product(env,p.id));
   const review=await product(env,p.id);assert.equal(review.state,'approved');assert.equal(calls.length,2);assert.ok(calls[1].instructions.includes('Apply the same qualification standard'));assert.ok(calls[1].instructions.includes('Buying willingness, authority, budget and internal CSV/Excel file formats are unknown'));
   assert.ok(Array.isArray(calls[1].input));assert.equal(calls[1].input[0].content[1].type,'input_image');assert.ok(calls.every(c=>c.instructions.includes(input.remarks)));
-  await assert.rejects(approveProduct(env,p.id,99),/current/);await approveProduct(env,p.id,review.revision);scoped=await scopeProduct(env,await product(env,p.id));
+  await assert.rejects(approveProduct(env,p.id,99),/profile/);await approveProduct(env,p.id,review.revision);scoped=await scopeProduct(env,await product(env,p.id));
   const s=await settings(scoped);assert.equal(s.dailyResearchLimit,60);assert.equal(s.dailyTotalLimit,12);assert.equal(s.openaiBudget,50);assert.equal(s.campaigns[0].query,'industrial pump flange suppliers');
   assert.equal((await all(scoped,'SELECT * FROM messages')).length,0);assert.equal((await productDetail(env,p.id)).images.length,1);
  }finally{globalThis.fetch=original;close();}

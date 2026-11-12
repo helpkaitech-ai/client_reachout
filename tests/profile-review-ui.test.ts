@@ -36,22 +36,22 @@ test('a pending profile leaves Find prospects available without approval or resu
  const x=await boot();try{
   assert.equal(x.doc.querySelector('[data-product-approve]'),null);
   assert.equal((x.doc.querySelector('[data-action="discover"]') as HTMLButtonElement).disabled,false);
-  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/generat.*appl/i);
+  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/prepare.*automatically/i);
   x.click('[data-view="products"]');await x.until(()=>!!x.doc.querySelector('.product-research'));
   assert.equal(x.doc.querySelector('[data-product-approve]'),null);
-  const answers=[...x.doc.querySelectorAll('[data-product-edit]')].find(b=>b.textContent==='Add answers or corrections') as HTMLElement;answers.click();
+  x.click('[data-product-edit]');
   await x.until(()=>!!x.doc.querySelector('#product-form'));
   assert.match((x.doc.querySelector('[name="remarks"]') as HTMLTextAreaElement).value,/mark buyer budgets unknown/);
   assert.equal(x.requests.some(r=>r.method==='POST'),false);
  }finally{x.close();}
 });
 
-test('settings distinguish the saved research cap and unknown buyer budget from the sending acknowledgement',async()=>{
+test('settings keep research budgets and sending consent in collapsed sections',async()=>{
  const x=await boot();try{
   x.click('[data-view="settings"]');await x.until(()=>!!x.doc.querySelector('#settings-form'));
   const text=x.doc.querySelector('#settings-form')!.textContent!;
-  assert.match(text,/spending ceiling, not approval for each search/);assert.match(text,/prospect's purchasing budget in Unknowns is unrelated/);
-  assert.match(text,/acknowledgement applies to sending emails, not product analysis or prospect research/);
+  assert.match(text,/OpenAI monthly budget/);assert.equal(x.doc.querySelectorAll('#settings-form details[open]').length,0);
+  assert.match(text,/email service permits sending/);assert.doesNotMatch(text,/approval for each search|Unknowns is unrelated/);
   assert.equal((x.doc.querySelector('[name="providerPolicyConfirmed"]') as HTMLInputElement).checked,false);
   assert.equal(x.requests.some(r=>r.method==='POST'),false);
  }finally{x.close();}
@@ -62,7 +62,7 @@ test('Find prospects resumes its workspace and queues one background search with
   x.env.OPENAI_API_KEY='mock';await run(x.scope,"UPDATE settings SET data=json_set(data,'$.campaigns',json(?))",JSON.stringify(analysis.campaigns));
   x.click('[data-action="discover"]');await x.until(()=>x.requests.some(r=>r.path.startsWith('/api/discover?')));
   await x.until(()=>!!x.doc.querySelector('#toast')?.textContent?.includes('Searching'));
-  assert.equal((await settings(x.scope)).prospectingPaused,false);
+  assert.equal((await settings(x.scope)).prospectingPaused,undefined);
   assert.equal(x.requests.filter(r=>r.path.startsWith('/api/discover?')).length,1);
   assert.equal(x.doc.querySelector('[data-resume-and-find]'),null);
   assert.equal((await all(x.scope,'SELECT * FROM ai_attempts')).length,0);
@@ -76,7 +76,7 @@ test('a healthy active workspace has no false sending warning when no draft awai
 test('actual billing and task warnings are separate bullets in one box without duplicate paused-task warnings',async()=>{
  const x=await boot({approved:true,paused:false,pipeline:{providerBlock:{code:'credit_balance_exhausted'},pausedJobs:4,attentionJobs:2}});try{
   assert.equal(x.doc.querySelectorAll('#content .note.warning').length,1);assert.equal(x.doc.querySelectorAll('.workspace-notice li').length,2);
-  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/OpenAI stopped requests for a billing problem/);
+  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/OpenAI credits required/);
   assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/2 tasks need review/);assert.doesNotMatch(x.doc.querySelector('.workspace-notice')!.textContent!,/4 tasks are paused/);
  }finally{x.close();}
 });

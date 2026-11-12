@@ -7,17 +7,16 @@ export { WorkspaceBackup } from './workspace-backup';
 import {backupStatus,forwardBackupImport,savedWorkspace,refreshBackup,isD1Unavailable} from './workspace-backup';
 import {backupTables} from './workspace-schema';
 import { approvalHash, approvalProblems, cleanEmail, publicUrl, validTimezone, validateSettings } from './policy';
-import { importLead, startDiscovery, searchHistory, discoveryPause } from './discovery';
+import { importLead, startDiscovery, searchHistory } from './discovery';
 import { notifyDigest, reconcile, signature, suppress, composedBody, unsubscribeUrl, sendApproved, syncInbox } from './mail';
 import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
 export {ProductWorkspace} from './product-store';
-import {product,productList,productDetail,saveProduct,scopeProduct,queueProductAnalysis,approveProduct,advanceProductAnalysis,requireProductReady,controlProductProspecting,requestProductDiscovery} from './products';
+import {product,productList,productDetail,saveProduct,scopeProduct,queueProductAnalysis,approveProduct,advanceProductAnalysis,requireProductReady,requestProductDiscovery} from './products';
 import {locationOptions, validateLocations, manualSearchPlan,nextProductCampaign} from './locations';
 import { gmail, jsonRequest } from './providers';
 import { prospectPage, prospectDetail } from './prospects';
 import {notificationPage,readNotifications} from './notifications';
-import {assertOutreachRunning,assertProspectingRunning,controlOutreach,controlProspecting} from './outreach-control';
 import {providerBlock,clearProviderBlock,assertProviderAvailable} from './provider-control';
 import {prepareWorkspaceSettings} from './workspace-settings';
 import {backfillAdmissions,qualifiedToday} from './qualified-prospects';
@@ -35,7 +34,7 @@ function connections(env:Env,s:Settings) {
   gmail:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_REFRESH_TOKEN),
   telegram:!!(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_CHAT_ID),
   notificationEmail:env.NOTIFY_EMAIL||'',sender:env.SENDER_EMAIL||'',
-  automationEnabled:false,sendingEnabled:env.ENABLE_SENDING==='true'&&!s.outreachPaused&&!s.prospectingPaused,notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true'&&!s.outreachPaused&&!s.prospectingPaused,
+  automationEnabled:false,sendingEnabled:env.ENABLE_SENDING==='true',notificationsEnabled:env.ENABLE_NOTIFICATIONS==='true',
   postalAddress:!!s.businessAddress,providerPolicyConfirmed:s.providerPolicyConfirmed,
   researchModel:env.OPENAI_RESEARCH_MODEL||'gpt-5.4-mini',draftModel:env.OPENAI_DRAFT_MODEL||'gpt-5.6-sol'
  };
@@ -77,18 +76,13 @@ async function dashboard(env:Env,compact=false,saved=false) {
 }
 async function mutate(request:Request,env:Env,path:string,input:any) {
  const s=await settings(env);
- if(path==='/api/discovery/control'){
-  if(typeof input.paused!=='boolean')throw new Error('Choose whether prospecting is paused');
-  if(!input.paused){await assertOutreachRunning(env);requireProductReady(env);}
-  return controlProspecting(env,input.paused);
- }
- if(['/api/discovery/sync','/api/notify'].includes(path)||/\/(research|rewrite|approve|retry)$/.test(path))await assertProspectingRunning(env);
+ if(path==='/api/discovery/control')throw new Error('This control has been removed. Use Search prospects.');
  if(env.PRODUCT_ID&&(/^\/api\/(import)$/.test(path)||/\/(research|rewrite|approve)$/.test(path)))requireProductReady(env);
  if(['/api/settings','/api/settings/sender','/api/settings/locations','/api/settings/preferences'].includes(path)) {
   const candidate=path.endsWith('/sender')?{...s,senderName:String(input.senderName||'').trim(),businessAddress:String(input.businessAddress||'').trim()}:path.endsWith('/locations')?{...s,locationIds:validateLocations(input.locationIds)}:path.endsWith('/preferences')?{...s,...input,senderName:s.senderName,businessAddress:s.businessAddress,locationIds:s.locationIds,campaigns:s.campaigns}:{...s,...input};
-  const validated=validateSettings({...candidate,outreachPaused:s.outreachPaused,prospectingPaused:s.prospectingPaused,discoveryPaused:s.discoveryPaused,discoveryPausedUntil:s.discoveryPausedUntil});const prepared=await prepareWorkspaceSettings(env,s,validated,path.endsWith('/sender')?input.senderEmail:undefined),next=prepared.settings;await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=json_set(excluded.data,'$.outreachPaused',json(CASE WHEN json_extract(settings.data,'$.outreachPaused')=1 THEN 'true' ELSE 'false' END),'$.prospectingPaused',json(CASE WHEN json_extract(settings.data,'$.prospectingPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPaused',json(CASE WHEN json_extract(settings.data,'$.discoveryPaused')=1 THEN 'true' ELSE 'false' END),'$.discoveryPausedUntil',coalesce(json_extract(settings.data,'$.discoveryPausedUntil'),''))`,JSON.stringify(next));
+  const validated=validateSettings(candidate);const prepared=await prepareWorkspaceSettings(env,s,validated,path.endsWith('/sender')?input.senderEmail:undefined),next=prepared.settings;await run(env,`INSERT INTO settings(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`,JSON.stringify(next));
   if(next.senderName!==s.senderName||next.businessAddress!==s.businessAddress)await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL WHERE status='approved'");
-  await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next),profileChanged:prepared.profileChanged,message:prepared.profileChanged?'Saved for this product. Find prospects will regenerate and apply the profile automatically before searching.':'Workspace settings saved'};
+  await audit(env,'settings_changed',null,'Owner updated settings');return {ok:true,settings:next,connections:connections(env,next),profileChanged:prepared.profileChanged,message:prepared.profileChanged?'Saved. The next search uses your changes.':'Saved'};
  }
  if(path==='/api/import') {
   const records=Array.isArray(input)?input:input.leads;if(!Array.isArray(records)||records.length>100)throw new Error('Import 1–100 lead records at a time');
@@ -98,15 +92,11 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  }
  if(path==='/api/discover'||path==='/api/discovery/sync'){
   if(path==='/api/discover'){
-   await assertOutreachRunning(env);
    if(env.PRODUCT_ID)return requestProductDiscovery(env);
-   await controlProspecting(env,false);
   }
-  if(s.discoveryPaused&&path==='/api/discovery/sync')return {state:'paused',message:'Automatic discovery is paused. Find prospects can request a manual search.'};
   if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
-  const resumeAt=discoveryPause(s);if(resumeAt&&path==='/api/discovery/sync')return {state:'paused',resumeAt,message:`Automatic prospect searches are paused until ${resumeAt}. Find prospects can request a manual search.`};
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
-  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND json_extract(j.payload,'$.manual')=1) AND created_at>=? LIMIT 1",day()+'T00:00:00.000Z');
+  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) AND created_at>=? LIMIT 1",day()+'T00:00:00.000Z');
   if(active)return {state:active.state,runId:active.id,message:'Your prospect search is already running or queued. Results appear automatically.'};
   if(env.PRODUCT_ID)return startDiscovery(env,s,nextProductCampaign(s,await searchHistory(env)),crypto.randomUUID(),true);
   const plan=env.PRODUCT_ID?s.campaigns.filter(c=>c.enabled):manualSearchPlan(s,await searchHistory(env));const batch=crypto.randomUUID();let first;
@@ -242,7 +232,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
  if(path==='/api/logout'&&request.method==='POST')return json({ok:true},200,{'Set-Cookie':await logout(request,env)});
  if(path==='/api/notifications'&&request.method==='GET')return json(await notificationPage(env));
  if(path==='/api/notifications/read'&&request.method==='POST'){try{return json(await readNotifications(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Notification update failed'},400);}}
- if(path==='/api/outreach/control'&&request.method==='POST'){try{return json(await controlOutreach(env,await body(request)));}catch(e){if(isD1Unavailable(e))throw e;return json({error:e instanceof Error?e.message:'Program control failed'},400);}}
+ if(path==='/api/outreach/control'&&request.method==='POST')return json({error:'This control has been removed.'},410);
  if(path==='/api/openai/control'&&request.method==='POST'){try{return json(await clearProviderBlock(env,await body(request)));}catch(e){return json({error:e instanceof Error?e.message:'Billing confirmation failed'},400);}}
  if(path==='/api/products'&&request.method==='GET')return json({products:await productList(env)});
  if(path==='/api/products'&&request.method==='POST'){try{return json({product:await saveProduct(env,await body(request,2400000))});}catch(e){return json({error:e instanceof Error?e.message:'Product could not be saved'},400);}}
@@ -253,14 +243,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   if(request.method!=='POST')return json({error:'Not found'},404);
   try{
    const input=await body(request,2400000);
-   if(['analyze','run','approve'].includes(action||''))await assertOutreachRunning(env);
    if(!action)return json({product:await saveProduct(env,input,id)});
    if(action==='analyze')return json(await queueProductAnalysis(env,id,input.confirmPaidRetry===true));
-   if(action==='approve'){if(input.profileReviewed!==true)throw new Error('Review the proposed customer profile before approval');return json(await approveProduct(env,id,Number(input.revision)));}
+   if(action==='approve')return json({error:'Profiles are applied automatically. Use Search prospects.'},410);
    if(action==='run'){const p=await product(env,id);if(p.state!=='analyzing')throw new Error('No product research is queued');await advanceProductAnalysis(env,p);return json(await productDetail(env,id));}
    if(action==='sender'){const p=await product(env,id),data=await gmail(env,'settings/sendAs');return json({sender:p.sender_email,accepted:!!data.sendAs?.some((s:any)=>s.sendAsEmail.toLowerCase()===p.sender_email.toLowerCase()&&s.verificationStatus==='accepted'),message:'Product sender must be an accepted send-as identity in the connected Gmail mailbox'});}
-   if(action==='prospecting')return json(await controlProductProspecting(env,id,input.paused));
-   if(action==='pause'){if(typeof input.enabled!=='boolean')throw new Error('Choose whether this product is enabled');await run(env,'UPDATE products SET enabled=?,updated_at=? WHERE id=?',input.enabled?1:0,now(),id);return json({ok:true});}
+   if(action==='prospecting'||action==='pause')return json({error:'This control has been removed.'},410);
    if(action==='archive'){if(input.confirm!==true)throw new Error('Confirm product archival; its history is retained');await run(env,"UPDATE products SET enabled=0,state='archived',updated_at=? WHERE id=?",now(),id);return json({ok:true});}
   }catch(e){return json({error:e instanceof Error?e.message:'Product action failed'},400);}
  }

@@ -53,10 +53,10 @@ export function validateSettings(input:unknown):Settings {
  const s=input as Settings;
  if(!s||typeof s!=='object') throw new Error('Settings must be an object');
  if(s.locationIds!==undefined)s.locationIds=validateLocations(s.locationIds);
- for(const [key,max] of Object.entries({dailyLeadLimit:20,dailyNewLimit:20,dailyTotalLimit:100,dailyResearchLimit:100,openaiBudget:50,apifyBudget:50,apifyRunCap:2,discoveryResults:10,discoveryIntervalDays:30})) {
+ for(const [key,max] of Object.entries({dailyLeadLimit:20,dailyNewLimit:20,dailyTotalLimit:100,dailyResearchLimit:100,openaiBudget:50,apifyBudget:50,apifyRunCap:2,discoveryResults:10})) {
   const v=s[key as keyof Settings]; if(typeof v!=='number'||!Number.isFinite(v)||v<=0||v>max) throw new Error(`${key} must be >0 and <=${max}`);
  }
- for(const key of ['dailyLeadLimit','dailyNewLimit','dailyTotalLimit','dailyResearchLimit','discoveryResults','discoveryIntervalDays'] as const) if(!Number.isInteger(s[key])) throw new Error(`${key} must be an integer`);
+ for(const key of ['dailyLeadLimit','dailyNewLimit','dailyTotalLimit','dailyResearchLimit','discoveryResults'] as const) if(!Number.isInteger(s[key])) throw new Error(`${key} must be an integer`);
  if(!Number.isInteger(s.sendStartHour)||!Number.isInteger(s.sendEndHour)||s.sendStartHour<0||s.sendEndHour>24||s.sendStartHour>=s.sendEndHour) throw new Error('Invalid sending hours');
  if(!Array.isArray(s.followupDays)||s.followupDays.length>3||s.followupDays.some((n,i)=>!Number.isInteger(n)||n<2||n>30||(i>0&&n<=s.followupDays[i-1]))) throw new Error('Use up to three increasing follow-up days, between 2 and 30');
  for(const k of ['senderName','businessAddress','offerContext','portfolio','freeOffer'] as const) if(typeof s[k]!=='string'||s[k].length>8000) throw new Error(`Invalid ${k}`);
@@ -67,9 +67,6 @@ export function validateSettings(input:unknown):Settings {
  if(s.freeOffer.length>1200||s.freeOffer.trim()&&!/\bfree\b|no cost|no charge/i.test(s.freeOffer))throw new Error('Describe a bounded free offer in at most 1200 characters');
  if(/[\r\n<>]/.test(s.senderName)) throw new Error('Invalid sender name');
  if(typeof s.providerPolicyConfirmed!=='boolean'||typeof s.sendWeekends!=='boolean') throw new Error('Invalid settings switches');
- if(s.researchAutomation!==undefined&&typeof s.researchAutomation!=='boolean')throw new Error('Invalid research automation setting');
- for(const key of ['outreachPaused','discoveryPaused','prospectingPaused'] as const)if(s[key]!==undefined&&typeof s[key]!=='boolean')throw new Error('Invalid pause setting');
- if(s.discoveryPausedUntil!==undefined&&(typeof s.discoveryPausedUntil!=='string'||(s.discoveryPausedUntil!==''&&(!Number.isFinite(Date.parse(s.discoveryPausedUntil))||new Date(s.discoveryPausedUntil).toISOString()!==s.discoveryPausedUntil))))throw new Error('Invalid discovery pause date');
  if(!Array.isArray(s.campaigns)||s.campaigns.length>30) throw new Error('Use up to 30 campaigns');
  for(const c of s.campaigns) if(!c||typeof c.query!=='string'||typeof c.location!=='string'||!c.query.trim()||!c.location.trim()||c.query.length>150||c.location.length>150||!/^[A-Z]{2}$/.test(c.country)||!validTimezone(c.timezone)||typeof c.enabled!=='boolean') throw new Error('Invalid campaign');
  const clean={...s};for(const k of Object.keys(clean))if(!(k in defaultsForSettings))delete (clean as any)[k];

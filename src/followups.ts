@@ -12,5 +12,5 @@ export async function conversationReady(env:Env,lead:Lead,kind:Draft['kind'],s:S
 export async function followupDraftReady(env:Env,lead:Lead,kind:Draft['kind'],id:string){
  if(kind!=='followup')return;
  await run(env,'UPDATE drafts SET send_after=(SELECT next_followup_at FROM leads WHERE id=?) WHERE id=?',lead.id,id);
- await notifyInApp(env,{key:'followup-ready:'+id,kind:'followup_ready',leadId:lead.id,draftId:id,title:`Follow-up ${lead.followup_count+1} ready for ${lead.company}`,body:`Review this personalized draft. Due ${lead.next_followup_at}. Nothing is sent without your approval.`});
+ await notifyInApp(env,{key:'followup-ready:'+id,kind:'followup_ready',leadId:lead.id,draftId:id,title:`Follow-up ${lead.followup_count+1} ready for ${lead.company}`,body:`Due ${lead.next_followup_at?.slice(0,10)}`});
 }

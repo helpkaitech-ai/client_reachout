@@ -40,11 +40,11 @@ test('Settings opens synchronously without a prospect request, even when reads a
  }finally{g.release();dom.window.close();}
 });
 
-test('pause acknowledges the click before the network responds, blocks duplicates, and recovers from failure',async()=>{
+test('search acknowledges the click before the network responds, blocks duplicates, and recovers from failure',async()=>{
  const {dom,doc,paths,controls,click}=await boot(),g=gate();try{
-  controls.hold=path=>path==='/api/outreach/control'?g.wait:Promise.resolve();controls.fail='/api/outreach/control';
-  const b=doc.querySelector('#outreach-toggle') as HTMLButtonElement;click('#outreach-toggle');
-  assert.equal(b.getAttribute('aria-busy'),'true');assert.equal(b.disabled,true);click('#outreach-toggle');assert.equal(paths.filter(p=>p==='/api/outreach/control').length,1);
+  controls.hold=path=>path==='/api/settings/locations'?g.wait:Promise.resolve();controls.fail='/api/settings/locations';
+  const b=doc.querySelector('[data-action="discover"]') as HTMLButtonElement;click('[data-action="discover"]');
+  assert.equal(b.getAttribute('aria-busy'),'true');assert.equal(b.disabled,true);click('[data-action="discover"]');assert.equal(paths.filter(p=>p==='/api/settings/locations').length,1);
   g.release();await until(()=>!b.disabled);assert.equal(b.hasAttribute('aria-busy'),false);assert.match(doc.querySelector('#toast')!.textContent!,/Temporary server failure/);
  }finally{g.release();dom.window.close();}
 });

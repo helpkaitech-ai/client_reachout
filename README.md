@@ -4,17 +4,15 @@ Website: [Relay](https://prepyr-outreach.prepyr-data.workers.dev)
 
 ## Relay and workspace controls
 
-The top-bar **Pause Relay / Resume Relay** control is an emergency stop for the whole application: paid AI work, product analysis, prospect processing and sending. Keeping Relay active allows product creation, editing and explicitly requested OpenAI target-profile analysis. Resuming Relay never resumes a workspace.
+Click **Search prospects** to start a background search. New products, edited products and changed locations automatically generate and apply the current customer profile before searching. There are no profile-approval or Relay/workspace pause controls. Old pause settings are ignored and removed by migration. Each email still requires its own Send action.
 
-**Prospect discovery is on demand in every workspace.** Click **Find prospects** to request a background campaign. New or edited products do not require a separate resume or target-profile approval: the requested campaign generates the current profile, applies it automatically, then searches. The Relay emergency pause remains available. Each email still requires its own Send action.
-
-There are **no recurring prospect searches and no campaign interval**. The minute worker advances requested work, inbox monitoring and existing conversations; it never starts a new prospect campaign. An unfinished search request expires at the UTC day boundary. Click Find prospects again on each day you want new prospects.
+There are **no recurring prospect searches and no campaign interval**. The minute worker advances requested work, inbox monitoring and existing conversations; it never starts a new prospect campaign. An unfinished search request expires at the UTC day boundary. Click Search prospects again on each day you want new prospects.
 
 OpenAI discovers independent small and midsize businesses worldwide, researches their public contacts and actual workflows, and prepares a business-specific working-pilot proposal for owner review. Cloudflare hosts the app and D1 database; Gmail handles sending and inbox synchronization.
 
 ## Product workspaces
 
-Open **Products -> Add product**. Enter its name, website, description, sender email and optional remarks. Upload up to three PNG/JPEG/WebP screenshots of 500 KB each. Remarks can specify preferred prospects, exclusions, geography, product points and email tone. OpenAI analyzes the website, supplied details and screenshots, then proposes customer types, buyer roles, qualification criteria, search scopes, uncertainties and email guidance. Click **Find prospects** to generate and apply the profile automatically and continue discovery in the background.
+Open **Products -> Add product**. Enter its name, website, description, sender email and optional remarks. Upload up to three PNG/JPEG/WebP screenshots of 500 KB each. Remarks can specify preferred prospects, exclusions, geography, product points and email tone. OpenAI analyzes the website, supplied details and screenshots, then proposes customer types, buyer roles, qualification criteria, search scopes, uncertainties and email guidance. Click **Search prospects** to generate and apply the profile automatically and continue discovery in the background.
 
 Use the **Product workspace** selector to switch between products and **Existing outreach**. Each product has independent prospects, conversation threads, source evidence, drafts, sender identity, daily usage and OpenAI expense ledger. A business/email can appear independently in multiple products. Replies are matched to their actual product conversation; global opt-outs block all products. Existing history stays in Existing outreach.
 
@@ -24,15 +22,19 @@ Each workspace defaults to **12 distinct qualified prospects per UTC day** and *
 
 Set **Customer targeting** when adding/editing a product or in its Settings: B2B, B2C market/distribution partners, public individual professionals/creators, agencies, startups or other. Describe the ideal customer and add targeting comments/exclusions. These settings, offer, portfolio/pricing and location selections enter every OpenAI request, from target-profile analysis through discovery, qualification and email assessment. Product location selections constrain geography while search topics remain OpenAI-derived. Worldwide rotates across countries even if the generated profile scopes initially mention a single country. Internal file formats, buying willingness and purchasing budget remain unknown unless evidenced; they are not mandatory public-proof requirements unless the owner explicitly asks for that confirmation. Private consumers are not discovered or profiled by addiction, health conditions, financial vulnerability or other sensitive personal traits; relevant organizations or professional providers may be proposed for owner approval instead.
 
-Changes to customer targeting, locations, offer or portfolio/pricing invalidate the previous profile and revoke unsent email approvals while preserving draft text and sent history. The next Find prospects request regenerates and applies the current profile automatically. Routine numerical limit changes preserve the profile. Sender changes still require an authorized Gmail send-as identity.
+Changes to customer targeting, locations, offer or portfolio/pricing invalidate the previous profile and revoke unsent email approvals while preserving draft text and sent history. The next Search prospects request regenerates and applies the current profile automatically. Routine numerical limit changes preserve the profile. Sender changes still require an authorized Gmail send-as identity.
 
 Each product sender must be an accepted send-as identity in the connected Gmail mailbox. Use **Check sender** to verify it; an arbitrary From address does not authorize sending. Product-specific Google mailbox OAuth connections are not configured by merely changing the sender address.
 
 **What you offer is workspace-specific.** Text entered under Existing outreach affects that workspace’s future targeting, qualification and email drafts. It does not change Prepyr or another product. Select the actual product before saving its offer, customer types, workflow, benefits, exclusions and pricing. Previously generated drafts keep their text until explicitly improved.
 
-Product campaigns and qualification are inferred by OpenAI from the approved profile and remarks. They do not use the legacy fixed industry/location rotation or a universal SMB filter. Product emails describe the actual product and documented terms. Set the product’s **Free offer** field to include that exact authorized offer in every initial email; the independent assessment reviews the complete email. No extra trials, discounts or custom implementation are invented. Every email still requires owner review and Send approval.
+Product campaigns and qualification are inferred by OpenAI from the automatically applied profile and remarks. They do not use the legacy fixed industry/location rotation or a universal SMB filter. Product emails describe the actual product and documented terms. Set the product’s **Free offer** field to include that exact authorized offer in every initial email; the independent assessment reviews the complete email. No extra trials, discounts or custom implementation are invented. Every email still requires owner review and Send approval.
 
 Editing product details, screenshots, remarks or sender creates a new revision. Its next requested search automatically regenerates and applies the profile. Existing draft text and sent history remain preserved; changed targeting requires reviewing or improving older drafts. Public email evidence does not verify mailbox deliverability.
+
+The nontechnical audience rule applies during discovery, enrichment and qualification: explicit professional software-development or technical-platform-building responsibilities are a mismatch when the owner targets nontechnical users. A technical title alone is not disqualifying. This remains an evidence-based model judgment; rejected candidates never count as qualified prospects.
+
+Search counters, product research and advanced settings use expandable details. Notifications contain the ready-email count, actionable issues and a workspace link; empty automatic digests are skipped.
 
 ## Deployment and recovery safeguards
 
@@ -46,7 +48,7 @@ Evidence and validation artifacts are local under `artifacts/`; database exports
 
 ## Research and review in Existing outreach
 
-1. **Find prospects** queues a durable OpenAI search for each selected location. Worldwide selection rotates industries and locations. The maximum is ten candidates per search; supported independent SMBs are imported and deduplicated. Chains, uncertain identity/size and weak evidence stay in the search review record.
+1. **Search prospects** queues a durable OpenAI search for each selected location. Worldwide selection rotates industries and locations. The maximum is ten candidates per search; supported independent SMBs are imported and deduplicated. Chains, uncertain identity/size and weak evidence stay in the search review record.
 2. Public-email research starts with official pages, then permits one bounded corroboration pass. Emails must occur literally in the saved report and quoted excerpt and have a consulted source URL. Missing emails remain missing; conflicting identities/shared recipients require review.
 3. Business research gathers multiple pages across at least two registrable domains. A dossier separates observed facts, strengths, hypotheses, unknowns and contradictions.
 4. Solution design chooses one small workflow with concrete inputs, actions, outputs, access needs, scope and an intended measurable benefit. The offer is a free 30, 45 or 60 day working software pilot after agreement. No invented losses, missing systems or guaranteed outcomes.
@@ -57,7 +59,7 @@ The qualified-prospect target and actual sending limits are separate. Only disti
 
 ## Spending and durable work
 
-Click **Find prospects** to search on demand. No discovery interval or automatic campaign switch is used. The saved budget still applies to requested searches and their background research.
+Click **Search prospects** to search on demand. No discovery interval or automatic campaign switch is used. The saved budget still applies to requested searches and their background research.
 
 Each product workspace has its own **$50 maximum OpenAI allowance per UTC calendar month**, shared across that product's discovery, extraction, product/screenshot analysis, contact research, business research, solution design, drafts, follow-ups and replies. Existing outreach retains its own historical ledger and allowance. Acquisition stages use up to 90% of it, keeping the remaining headroom for existing conversations. A conservative reservation is made before each request and reconciled with usage afterward. The provider invoice remains authoritative; Relay cannot see unrelated applications spending on the same key.
 
@@ -150,7 +152,7 @@ supported use cases; an industry label alone is insufficient. The email review
 shows the observed workflow, matching product capability, source and unknowns.
 Older unsent product drafts are held for renewed fit review, preserving their text
 and sent history. Open Settings → Earlier drafts to reassess to review them after
-the profile refresh; Improve this email rechecks their fit. Profiles regenerate automatically on the next Find prospects
+the profile refresh; Improve this email rechecks their fit. Profiles regenerate automatically on the next Search prospects
 request. Search and monthly budget limits remain in force.
 
 The separate [agentic search research](AGENTIC_SEARCH_RESEARCH.md) proposes an
@@ -158,7 +160,7 @@ experiment and evaluation criteria. It does not implement an agent architecture.
 
 ## LinkedIn and OpenAI discovery
 
-Select **LinkedIn via Apify + OpenAI** in the workspace Settings to combine public professional-profile discovery with OpenAI company research, product-fit assessment and drafting. OpenAI-only mode remains available. Searches start only from Find prospects; there is no recurring Apify schedule.
+Select **LinkedIn via Apify + OpenAI** in the workspace Settings to combine public professional-profile discovery with OpenAI company research, product-fit assessment and drafting. OpenAI-only mode remains available. Searches start only from Search prospects; there is no recurring Apify schedule.
 
 Add `APIFY_TOKEN` as a **Secret** under Cloudflare → Workers & Pages → `prepyr-outreach` → Settings → Variables and Secrets, then save/deploy. For local development only, put it in the ignored `.dev.vars` file. Never put tokens in Git, a URL or the browser preferences form. A browser login or ChatGPT MCP connection does not authenticate the deployed Worker. Check connections verifies the token without starting a paid actor.
 

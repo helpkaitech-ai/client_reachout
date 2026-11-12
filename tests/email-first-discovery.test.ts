@@ -61,7 +61,7 @@ for(const productWorkspace of [true,false])for(const failure of ['missing','gues
  }finally{globalThis.fetch=original;x.close();}
 });
 
-for(const failure of ['no_mapping','unknown_use_case','invented_capability','snippet','paraphrase','explicit_mismatch'])test(`a public email does not admit a candidate with ${failure} product fit`,async()=>{
+for(const failure of ['no_mapping','unknown_use_case','invented_capability','snippet','paraphrase','explicit_mismatch','technical_specialist'])test(`a public email does not admit a candidate with ${failure} product fit`,async()=>{
  const x=await setup(),original=globalThis.fetch,ai=aiWith((stage,out)=>{
   if(!['discover_extract','discover_evidence_repair'].includes(stage))return;const c=out.candidates[0];
   if(failure==='no_mapping')delete c.productFit;
@@ -69,12 +69,14 @@ for(const failure of ['no_mapping','unknown_use_case','invented_capability','sni
   if(failure==='invented_capability')c.productFit.productCapability='Automatic enterprise accounting integration';
   if(failure==='snippet')c.productFit.evidenceType='snippet';
   if(failure==='paraphrase')c.productFit.excerpt='The business needs quotation intake automation, which it does not have.';
-  if(failure==='explicit_mismatch')c.productFit.disqualifierFound=true;
+  if(['explicit_mismatch','technical_specialist'].includes(failure))c.productFit.disqualifierFound=true;
+  if(failure==='technical_specialist')c.productFit.disqualifierReason='Explicit Java, C# and SQL platform development conflicts with the requested nontechnical audience';
  },{snippetUrls:failure==='snippet'?[sourceUrls[0]]:[]});globalThis.fetch=ai.fetcher;
  try{
   await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<3;i++)await processAvailableJobs(x.scope);
   assert.equal((await all(x.scope,'SELECT * FROM leads')).length,0);
   const candidate=await one<any>(x.scope,'SELECT outcome,data FROM discovery_candidates');assert.equal(candidate.outcome,'not_a_fit');assert.ok(JSON.parse(candidate.data).discoveryIssues.length);
+  if(failure==='technical_specialist'){assert.ok(ai.calls.every(c=>c.instructions.includes('explicit professional software-development or technical-platform-building responsibilities are a mismatch')));assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,0);}
   assert.equal(ai.calls.length,['snippet','paraphrase'].includes(failure)?3:2);
  }finally{globalThis.fetch=original;x.close();}
 });

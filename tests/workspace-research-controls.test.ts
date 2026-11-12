@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import {database,readyLead,testSettings} from './helpers';
 import {mockOpenAI,businessReport,contactExcerpt,sourceUrls} from './openai-fixture';
 import {all,one,run,settings,now,enqueue} from '../src/db';
-import {saveProduct,product,scopeProduct,queueProductAnalysis,advanceProductAnalysis,approveProduct,controlProductProspecting,productList} from '../src/products';
-import {controlProspecting,controlOutreach} from '../src/outreach-control';
+import {saveProduct,product,scopeProduct,queueProductAnalysis,advanceProductAnalysis,approveProduct,productList} from '../src/products';
 import {processAvailableJobs,scheduleResearch,tickWorkspaces} from '../src/engine';
 import {providerBlock,clearProviderBlock} from '../src/provider-control';
 import {openai} from '../src/providers';
@@ -25,29 +24,18 @@ test('Relay active permits independent product setup and explicitly requested se
  try{
   await rootSettings(env,{prospectingPaused:true,discoveryPaused:true});const legacy=await readyLead(env);await scheduleResearch(env);
   const a=await saveProduct(env,input),b=await saveProduct(env,{...input,name:'Product B'});
-  await assert.rejects(controlProductProspecting(env,a.id,false),/Approve/);
   await queueProductAnalysis(env,a.id);await advanceProductAnalysis(env,await product(env,a.id));await advanceProductAnalysis(env,await product(env,a.id));
   await approveProduct(env,a.id,a.revision);const scope=await scopeProduct(env,await product(env,a.id));
-  assert.equal((await settings(scope)).prospectingPaused,false);assert.equal((await settings(scope)).discoveryPaused,true);
+  assert.equal((await settings(scope)).prospectingPaused,undefined);assert.equal((await settings(scope)).discoveryPaused,undefined);
   const before=ai.calls.length;await tickWorkspaces(env);assert.equal(ai.calls.length,before);
-  await controlProductProspecting(env,a.id,false);await startDiscovery(scope,await settings(scope));for(let i=0;i<14;i++)await tickWorkspaces(env);
-  assert.ok(await one(scope,'SELECT id FROM drafts'));assert.equal((await settings(env)).prospectingPaused,true);
+  await startDiscovery(scope,await settings(scope));for(let i=0;i<14;i++)await tickWorkspaces(env);
+  assert.ok(await one(scope,'SELECT id FROM drafts'));assert.equal((await settings(env)).prospectingPaused,undefined);
   assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(env,'SELECT * FROM drafts')).length,0);
   assert.equal((await one<any>(env,'SELECT state FROM jobs WHERE lead_id=?',legacy.id)).state,'pending');
-  assert.equal((await settings(await scopeProduct(env,b))).prospectingPaused,false);
-  const list=await productList(env);assert.equal(list.find(p=>p.id===a.id)!.prospecting_paused,false);assert.equal(list.find(p=>p.id===b.id)!.prospecting_paused,false);
-  const count=ai.calls.length;await controlProductProspecting(env,a.id,true);await tickWorkspaces(env);assert.equal(ai.calls.length,count);
+  assert.equal((await settings(await scopeProduct(env,b))).prospectingPaused,undefined);
+  const list=await productList(env);assert.equal(list.find(p=>p.id===a.id)!.prospecting_paused,undefined);assert.equal(list.find(p=>p.id===b.id)!.prospecting_paused,undefined);
   assert.equal((await all(scope,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=original;close();}
-});
-
-test('workspace pause is enforced against stale scoped contexts just before spending',async()=>{
- const {env,close}=database();env.OPENAI_API_KEY='mock';try{
-  const p=await saveProduct(env,input);await run(env,"UPDATE products SET state='approved',approved_revision=revision WHERE id=?",p.id);
-  const scope=await scopeProduct(env,await product(env,p.id));await controlProductProspecting(env,p.id,false);await controlProductProspecting(env,p.id,true);
-  await assert.rejects(openai(scope,testSettings,'x','x','stale',{search:true,stage:'business_research',workflow:{jobId:'stale',paidCalls:0}}),/Prospecting is paused/);
-  assert.equal((await all(scope,'SELECT * FROM expenses')).length,0);
- }finally{close();}
 });
 
 test('one credit rejection stops the shared key across workspaces and does not consume unspent daily research slots',async()=>{
@@ -61,7 +49,7 @@ test('one credit rejection stops the shared key across workspaces and does not c
   const p=await saveProduct(env,input),scope=await scopeProduct(env,p);await assert.rejects(queueProductAnalysis(env,p.id),/credits need attention/);
   assert.equal(calls,1);assert.equal((await product(env,p.id)).state,'draft');
   await assert.rejects(clearProviderBlock(env,{}),/Confirm/);await clearProviderBlock(env,{billingUpdated:true});assert.equal(await providerBlock(env),null);
-  assert.equal((await settings(scope)).prospectingPaused,false);assert.equal((await all(env,"SELECT * FROM jobs WHERE state='paused_provider'")).length,1);
+  assert.equal((await settings(scope)).prospectingPaused,undefined);assert.equal((await all(env,"SELECT * FROM jobs WHERE state='paused_provider'")).length,1);
  }finally{globalThis.fetch=original;close();}
 });
 
@@ -103,10 +91,10 @@ test('stopped unfinished candidates stay out of prospects while recorded task er
  const {env,close}=database();try{const lead=await readyLead(env,{email:null});await enqueue(env,'research',lead.id,{},'stopped');await run(env,"UPDATE leads SET research_stage='contact_search' WHERE id=?",lead.id);await run(env,"UPDATE jobs SET state='paused_provider',error='OpenAI returned HTTP 429 (credit_balance_exhausted)' WHERE id='stopped'");const result=await prospectPage(env,new URL('https://outreach.example.com/api/prospects'));assert.equal(result.total,0);const job=await one<any>(env,"SELECT * FROM jobs WHERE id='stopped'");assert.equal(job.state,'paused_provider');assert.match(job.error,/credit_balance_exhausted/);}finally{close();}
 });
 
-test('product resume and billing reset require same-origin authentication and settings cannot bypass workspace pause',async()=>{
+test('removed controls and billing reset remain authenticated; legacy pause flags are discarded',async()=>{
  const {env,close}=database(),origin=env.APP_URL!,ctx={waitUntil:()=>{}} as unknown as ExecutionContext;
  const req=(path:string,data:any,cookie='')=>worker.fetch(new Request(origin+path,{method:'POST',headers:{Origin:origin,'X-Requested-With':'Prepyr',Cookie:cookie},body:JSON.stringify(data)}),env,ctx);
- try{await rootSettings(env,{prospectingPaused:true});const p=await saveProduct(env,input);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:false})).status,401);assert.equal((await req('/api/openai/control',{billingUpdated:true})).status,401);const login=await req('/api/login',{password:env.ADMIN_PASSWORD}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await req('/api/settings/preferences',{...testSettings,prospectingPaused:false},cookie)).status,200);assert.equal((await settings(env)).prospectingPaused,true);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:false},cookie)).status,400);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:true},cookie)).status,200);assert.equal((await settings(env)).prospectingPaused,true);}finally{close();}
+ try{await rootSettings(env,{prospectingPaused:true});const p=await saveProduct(env,input);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:false})).status,401);assert.equal((await req('/api/openai/control',{billingUpdated:true})).status,401);const login=await req('/api/login',{password:env.ADMIN_PASSWORD}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await req('/api/settings/preferences',{...testSettings,prospectingPaused:false},cookie)).status,200);assert.equal((await settings(env)).prospectingPaused,undefined);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:false},cookie)).status,410);assert.equal((await req('/api/products/'+p.id+'/prospecting',{paused:true},cookie)).status,410);assert.equal((await settings(env)).prospectingPaused,undefined);}finally{close();}
 });
 
 test('actual UI saves products ready for on-demand searches and retains independent workspaces',async()=>{
@@ -121,18 +109,18 @@ test('actual UI saves products ready for on-demand searches and retains independ
   const login=await worker.fetch(new Request(base+'/api/login',{method:'POST',headers:{Origin:base,'X-Requested-With':'Prepyr'},body:JSON.stringify({password:env.ADMIN_PASSWORD})}),env,ctx),cookie=login.headers.get('set-cookie')!.split(';')[0];
   (dom.window as any).fetch=(path:string,init:any)=>worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);
   dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));
-  assert.equal(doc.querySelector('#outreach-state')!.textContent,'Relay active');assert.equal(doc.querySelector('[data-open]'),null);assert.match(doc.querySelector('#content')!.textContent!,/1 tasks are paused/);
+  assert.equal(doc.querySelector('#outreach-state'),null);assert.equal(doc.querySelector('[data-open]'),null);assert.match(doc.querySelector('#content')!.textContent!,/1 tasks reached a limit/);
   await click('[data-view="products"]');await until(()=>!!doc.querySelector('[data-product-new]'));
   await click('[data-product-new]');await until(()=>!!doc.querySelector('#product-form'));
   for(const [key,value]of Object.entries({...input,name:'Saved through UI'}))(doc.querySelector('#product-form [name="'+key+'"]') as HTMLInputElement).value=value;
   (doc.querySelector('#product-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));
   await until(()=>!!doc.querySelector('.product-research h2')?.textContent?.includes('Saved through UI'));
-  const saved=(await productList(env)).find(p=>p.name==='Saved through UI')!;assert.ok(saved);assert.equal(saved.prospecting_paused,false);assert.equal((await all(await scopeProduct(env,saved),'SELECT * FROM jobs')).length,0);
+  const saved=(await productList(env)).find(p=>p.name==='Saved through UI')!;assert.ok(saved);assert.equal(saved.prospecting_paused,undefined);assert.equal((await all(await scopeProduct(env,saved),'SELECT * FROM jobs')).length,0);
   assert.equal(doc.querySelector('[data-product-pause]'),null);
   await click('[data-product-open="'+b.id+'"]');await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product B / Prospects');
   assert.equal(doc.querySelector('[data-discovery-control]'),null);
-  assert.equal((await settings(await scopeProduct(env,b))).prospectingPaused,false);
-  assert.equal((await settings(env)).prospectingPaused,true);
+  assert.equal((await settings(await scopeProduct(env,b))).prospectingPaused,undefined);
+  assert.equal((await settings(env)).prospectingPaused,undefined);
   assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);
 
  }finally{dom.window.close();close();}
