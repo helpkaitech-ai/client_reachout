@@ -242,6 +242,6 @@ test('opted-in verified work email is admitted without a public email quotation 
  try{
   await run(x.scope,"UPDATE settings SET data=json_set(data,'$.discoveryProvider','hybrid','$.allowWorkEmailEnrichment',json('true'),'$.dailyLeadLimit',1) WHERE id=1");
   await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<15;i++)await tick(x.scope);
-  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(lead.contact_status,'provider_verified');assert.equal(lead.email,email);assert.equal(publicContactReady(lead),true);assert.equal(JSON.parse(lead.contact_evidence).verificationRunId,'verify123');assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal(starts,3);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(lead.contact_status,'provider_verified');assert.equal(lead.verification,'valid');assert.equal(lead.email,email);assert.equal(publicContactReady(lead),true);assert.equal(JSON.parse(lead.contact_evidence).verificationRunId,'verify123');assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal(starts,3);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=old;x.close();}
 });

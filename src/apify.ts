@@ -2,7 +2,7 @@ import type {Env,Settings,Campaign} from './types';
 import {one,run,now,reserve,settle,uncertainExpense,audit} from './db';
 import {StageYield,type Workflow} from './ai';
 import {UncertainProviderError,openai,outputText} from './providers';
-import {objectSchema,textField,researchSecurity} from './evidence';
+import {objectSchema,textField,researchSecurity,collectSources,sourceKey} from './evidence';
 import {publicUrl} from './policy';
 import type {SourcePage} from './source-pages';
 
@@ -21,10 +21,10 @@ export async function apifyRequest(env:Env,path:string,init:RequestInit={}){
  try{while(true){const chunk=await reader.read();if(chunk.done)break;bytes+=chunk.value.byteLength;if(bytes>2*1024*1024){await reader.cancel();throw new Error('Apify response exceeded the bounded result size');}text+=decoder.decode(chunk.value,{stream:true});}text+=decoder.decode();}finally{reader.releaseLock();}
  return JSON.parse(text);
 }
-export function actorInput(plan:{searchQuery:string;currentJobTitles:string[]},campaign:Campaign,index:number,customerTypes:string[]=[]){
+export function actorInput(plan:{searchQuery:string;currentJobTitles:string[]},campaign:Campaign,index:number,customerTypes:string[]=[],currentCompanies:string[]=[]){
  const country=new Intl.DisplayNames(['en'],{type:'region'}).of(campaign.country)||campaign.country;
  const city=campaign.location.split(',')[0].trim();
- return {profileScraperMode:'Full',searchQuery:customerTypes.includes('startups')?'startup':String(plan.searchQuery||'').trim().split(/\s+/).slice(0,2).join(' ').slice(0,100),currentJobTitles:plan.currentJobTitles.slice(0,4).map(x=>x.slice(0,100)),locations:[city===country?country:`${city}, ${country}`],maxItems:25,startPage:1,takePages:1,autoQuerySegmentation:false};
+ return {profileScraperMode:'Full',...(currentCompanies.length?{currentCompanies:currentCompanies.slice(0,12)}:{}),searchQuery:currentCompanies.length?'':customerTypes.includes('startups')?'startup':String(plan.searchQuery||'').trim().split(/\s+/).slice(0,2).join(' ').slice(0,100),currentJobTitles:plan.currentJobTitles.slice(0,4).map(x=>x.slice(0,100)),locations:[city===country?country:`${city}, ${country}`],maxItems:25,startPage:1,takePages:1,autoQuerySegmentation:false};
 }
 // Retain only public professional context, not education, photos or personal data.
 // Full mode does not perform third-party email enrichment. Published addresses
@@ -44,6 +44,16 @@ export function profilePages(items:unknown[],runId:string):SourcePage[]{
  }
  return [...new Map(pages.map(p=>[p.url,p])).values()];
 }
+const companiesSchema=objectSchema({companies:{type:'array',maxItems:12,items:objectSchema({name:textField,linkedinUrl:textField})}});
+async function startupCompanyFilter(env:Env,s:Settings,jobId:string,campaign:Campaign,w:Workflow,index:number){
+ if(!s.customerTypes.includes('startups'))return [];
+ const angles=['commerce, consumer goods and logistics','climate, energy and manufacturing','healthcare operations and wellness businesses','travel, property and hospitality','education, workforce and professional services','a diverse mix of nontechnology and technology businesses'];
+ const report=await openai(env,s,JSON.stringify({campaign,index,sectorAngle:angles[index%angles.length]}),`${researchSecurity} Find 10-12 current startups, venture-backed growth companies, or other growing businesses permitted by the owner, with professionals working in the requested geography. When startup status is a preference, prioritize startups but include equally suitable growing businesses without requiring a startup label or venture funding. Prioritize the supplied sector angle while staying broad. Find organizations where the product could help business users with data; do not require stated pain, a reporting cadence, a specific file format, company size, founder status or technical industry. Avoid reporting consultants and competing data-analysis software vendors. Search current official company, investor and funding sources, plus LinkedIn company pages. Provide exact company names, official websites, current startup/growth evidence and LinkedIn /company/ URLs. Search for LinkedIn company URLs explicitly and consult them; never invent slugs. Diversify the companies, not a single sector. No email lookup or pitch. The following people-search uses a current-employer filter, so obsolete employers and large established enterprises are poor seeds.`,jobId+':company-search',{search:true,workflow:w,stage:'linkedin_company_search',searchContext:'high',maxTools:6,maxOutput:4500,location:{country:campaign.country}});
+ const sources=collectSources(report);
+ const extracted=await openai(env,s,JSON.stringify({report:outputText(report),sources}),`${researchSecurity} Extract up to twelve suitable current companies from this saved report, honoring startup preference versus strict startup-only targeting. Only copy exact LinkedIn /company/ URLs included in the consulted sources. No invented names or URL slugs. These are discovery seeds; final person and company qualification still follows.`,jobId+':company-extract',{schema:companiesSchema,workflow:w,stage:'linkedin_company_extract',maxOutput:1600});
+ const companies=JSON.parse(outputText(extracted)).companies;
+ return [...new Set<string>(companies.filter((c:any)=>/^https:\/\/(?:[a-z]+\.)?linkedin\.com\/company\/[^/?#]+/.test(c.linkedinUrl)&&sources.some(source=>sourceKey(source.url)===sourceKey(c.linkedinUrl))).map((c:any)=>c.linkedinUrl.split('?')[0].replace(/\/$/,'')))].slice(0,12);
+}
 export async function linkedinDiscovery(env:Env,s:Settings,jobId:string,campaign:Campaign,w:Workflow,index=0):Promise<SourcePage[]>{
  if(s.discoveryProvider!=='hybrid')return [];
  if(!env.APIFY_TOKEN)throw new Error('LinkedIn discovery requires APIFY_TOKEN in Cloudflare Worker secrets');
@@ -54,8 +64,9 @@ export async function linkedinDiscovery(env:Env,s:Settings,jobId:string,campaign
  if(state?.state==='failed')throw new Error(state.error||'Apify run failed; inspect the saved run before another search');
  if(state?.state==='submitting')throw new UncertainProviderError('Apify');
  if(!state){
+  const currentCompanies=await startupCompanyFilter(env,s,jobId,campaign,w,index);
   const result=await openai(env,s,JSON.stringify({location:campaign.location,country:campaign.country,searchAngle:campaign.query,index}),`${researchSecurity} Plan ONE bounded LinkedIn people search using the owner product profile and workspace targeting. Choose 1-4 related current professional job titles and optionally ONE business-context word as searchQuery. Never include activities, deliverables or pain keywords in searchQuery. Rotate departments across searchIndex; include actual users as well as buyers. Never require founder/owner status, small company size, technology industry, a repeated reporting cadence, spreadsheet pain or exact file format unless the owner explicitly requires it. Prefer a broad role filter and a simple business context keyword; do not AND-stack constraints. Empty searchQuery is valid when titles suffice. Do not invent a company list or location. Return only the search input.`,jobId+':linkedin-plan',{schema:planSchema,workflow:w,stage:'linkedin_plan',maxOutput:1000});
-  const input=actorInput(JSON.parse(outputText(result)),campaign,index,s.customerTypes);
+  const input=actorInput(JSON.parse(outputText(result)),campaign,index,s.customerTypes,currentCompanies);
   const expenseId=await reserve(env,'apify',s.apifyRunCap,s.apifyBudget,jobId+':linkedin');
   state={state:'submitting',expenseId,startedAt:now()};
   const claimed=await run(env,'INSERT OR IGNORE INTO pipeline_results(job_id,data,created_at) VALUES(?,?,?)',key,JSON.stringify(state),now());
