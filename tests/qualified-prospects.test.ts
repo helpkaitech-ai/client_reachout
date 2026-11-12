@@ -106,38 +106,26 @@ test('original discovery URL, excerpt and role reach deep research and all decis
  }finally{globalThis.fetch=original;x.close();}
 });
 
-test('private rejected candidates do not consume the daily qualified admission limit; valid distinct drafts do',async()=>{
+test('qualified reporting excludes rejected candidates; standalone imports have no daily admission cap',async()=>{
  const x=await setup({dailyLeadLimit:2,dailyNewLimit:2});try{
   for(let i=0;i<20;i++)await readyLead(x.scope,{company:'Rejected '+i,email:'rejected'+i+'@example.org'});
   const a=await eligible(x.scope,'Good A','gooda@example.org'),b=await eligible(x.scope,'Good B','goodb@example.org');
   await recordAdmission(x.scope,a.lead.id,a.draft.id);await recordAdmission(x.scope,a.lead.id,a.draft.id);await recordAdmission(x.scope,b.lead.id,b.draft.id);
-  assert.equal(await qualifiedToday(x.scope),2);assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'next'),false);
+  assert.equal(await qualifiedToday(x.scope),2);assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'next'),true);
   await run(x.scope,"UPDATE drafts SET quality_hold='No longer valid' WHERE id=?",a.draft.id);assert.equal(await qualifiedToday(x.scope),1);assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'next'),true);
  }finally{x.close();}
 });
 
-test('replacement discovery bypasses the interval inside an unfinished cycle and stops at research and empty-search bounds',async()=>{
- const x=await setup({dailyResearchLimit:2,discoveryResults:1});try{
-  const first:any=await startDiscovery(x.scope,await settings(x.scope));assert.equal(first.state,'queued');await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");
-  const second=await startDiscovery(x.scope,await settings(x.scope));assert.equal(second.state,'queued');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
-  await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");
-  await claimResearchBusiness(x.scope,'attempt1',2);await claimResearchBusiness(x.scope,'attempt2',2);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'research_limit');
-  await run(x.scope,'DELETE FROM research_claims');
-  for(let i=0;i<4;i++){assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');await run(x.scope,"UPDATE discovery_batches SET state='no_results'");await run(x.scope,"UPDATE jobs SET state='complete'");}
-  assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'search_limit');
- }finally{x.close();}
-});
-
-test('twelve distinct qualified prospects complete a cycle; rejected candidates do not advance it and the next day requires a new explicit request',async()=>{
+test('completed searches allow a fresh requested target on the same day, excluding earlier admissions',async()=>{
  const x=await setup();try{
-  await startDiscovery(x.scope,await settings(x.scope));const batch=(await one<any>(x.scope,'SELECT id FROM discovery_batches'))!.id;
+  await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,false,3);const batch=(await one<any>(x.scope,'SELECT id FROM discovery_batches'))!.id;
   await run(x.scope,"UPDATE discovery_batches SET state='complete'");await run(x.scope,"UPDATE jobs SET state='complete'");
-  for(let i=0;i<12;i++){const q=await eligible(x.scope,'Good '+i,'good'+i+'@example.org');await recordAdmission(x.scope,q.lead.id,q.draft.id);await run(x.scope,"INSERT INTO discovery_candidates(id,batch_id,entity_key,data,outcome,lead_id,created_at) VALUES(?,?,?,'{}','imported',?,?)",'c'+i,batch,'k'+i,q.lead.id,now());}
-  assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'daily_target');assert.equal(await qualifiedToday(x.scope),12);assert.equal((await prospectPage(x.scope,page)).total,12);
-  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'daily_target');
-  assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);assert.ok((await one<any>(x.scope,'SELECT completed_at FROM discovery_cycles'))!.completed_at);
-  await run(x.scope,"UPDATE discovery_cycles SET completed_at=?",new Date(Date.now()-7*86400000).toISOString());assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'daily_target');
-  await run(x.scope,'UPDATE qualified_prospects SET admitted_at=?',new Date(Date.now()-86400000).toISOString());assert.equal(await qualifiedToday(x.scope),0);assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).qualified,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope))).state,'queued');
+  for(let i=0;i<3;i++){const q=await eligible(x.scope,'Good '+i,'good'+i+'@example.org');await recordAdmission(x.scope,q.lead.id,q.draft.id);await run(x.scope,"INSERT INTO discovery_candidates(id,batch_id,entity_key,data,outcome,lead_id,created_at) VALUES(?,?,?,'{}','imported',?,?)",'c'+i,batch,'k'+i,q.lead.id,now());}
+  assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).qualified,3);
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'manual_only');
+  assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,false,2)).state,'queued');
+  const progress=await discoveryProgress(x.scope,await settings(x.scope));assert.equal(progress.target,2);assert.equal(progress.qualified,0);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,2);assert.equal((await prospectPage(x.scope,page)).total,3);
  }finally{x.close();}
 });
 
@@ -171,11 +159,18 @@ for(const {automatic,rejectedBatches} of [{automatic:true,rejectedBatches:1},{au
   assert.equal((await all(x.scope,"SELECT * FROM leads WHERE status='not_qualified'")).length,rejectedBatches*4);assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,12);
   assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,rejectedBatches+3);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
   assert.equal((await all(x.scope,'SELECT * FROM research_claims')).length,rejectedBatches*4+12);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
-  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true)).state,'daily_target');
+  assert.equal((await all(x.env,'SELECT * FROM leads')).length,0);assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'manual_only');
+  if(automatic){
+   assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,false,3)).state,'queued');
+   for(let i=0;i<50;i++){await tick(x.scope);if((await discoveryProgress(x.scope,await settings(x.scope))).qualified===3)break;}
+   for(let i=0;i<3;i++)await tick(x.scope);
+   assert.equal(await qualifiedToday(x.scope),15);const progress=await discoveryProgress(x.scope,await settings(x.scope));assert.equal(progress.qualified,3);assert.equal(progress.target,3);assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,2);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+  }
+
  }finally{globalThis.fetch=original;x.close();}
 });
 
-test('the qualified prospect target stays independent of a lower daily sending cap',async()=>{
+test('standalone qualified drafts are not limited by legacy daily caps',async()=>{
  const x=await setup({dailyLeadLimit:12,dailyNewLimit:1});try{
   for(let i=0;i<12;i++){
    assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'next-'+i),true);
@@ -183,7 +178,7 @@ test('the qualified prospect target stays independent of a lower daily sending c
    await recordAdmission(x.scope,q.lead.id,q.draft.id);
   }
   assert.equal(await qualifiedToday(x.scope),12);
-  assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'thirteenth'),false);
+  assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'thirteenth'),true);
  }finally{x.close();}
 });
 
@@ -194,5 +189,19 @@ test('cancelled search after a product edit cannot block a new manual search',as
   await run(x.scope,"UPDATE discovery_cycles SET completed_at=?",now());
   const next=await startDiscovery(x.scope,await settings(x.scope),undefined,'new-profile');
   assert.equal(next.runId,'new-profile');assert.equal(next.state,'queued');
+ }finally{x.close();}
+});
+
+
+test('per-search research and empty-result bounds stop continuations but allow a fresh user request',async()=>{
+ const x=await setup({discoveryResults:10});try{
+  await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,false,2);const batch=await one<any>(x.scope,'SELECT * FROM discovery_batches');
+  const lead=await readyLead(x.scope,{status:'not_qualified'});await run(x.scope,"INSERT INTO discovery_candidates(id,batch_id,entity_key,data,outcome,lead_id,created_at) VALUES('limit-c',?,'limit-k','{}','imported',?,?)",batch.id,lead.id,now());await claimResearchBusiness(x.scope,lead.id,100);
+  await run(x.scope,'UPDATE discovery_cycles SET research_limit=1');await run(x.scope,"UPDATE discovery_batches SET state='complete'");await run(x.scope,"UPDATE jobs SET state='complete'");
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'manual_only');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,1);
+  assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,false,5)).state,'queued');assert.equal((await discoveryProgress(x.scope,await settings(x.scope))).attempts,0);
+  const cycle=await one<any>(x.scope,'SELECT * FROM discovery_cycles ORDER BY rowid DESC LIMIT 1');await run(x.scope,'UPDATE discovery_cycles SET research_limit=1 WHERE id=?',cycle.id);
+  for(let i=0;i<5;i++){await run(x.scope,"UPDATE jobs SET state='complete'");await run(x.scope,"UPDATE discovery_batches SET state='no_results'");assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'queued');}
+  await run(x.scope,"UPDATE jobs SET state='complete'");await run(x.scope,"UPDATE discovery_batches SET state='no_results'");assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'manual_only');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,2);
  }finally{x.close();}
 });

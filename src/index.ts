@@ -8,7 +8,7 @@ import {backupStatus,forwardBackupImport,savedWorkspace,refreshBackup,isD1Unavai
 import {backupTables} from './workspace-schema';
 import { approvalHash, approvalProblems, cleanEmail, publicUrl, validTimezone, validateSettings } from './policy';
 import { importLead, startDiscovery, searchHistory } from './discovery';
-import { notifyDigest, reconcile, signature, suppress, composedBody, unsubscribeUrl, sendApproved, syncInbox } from './mail';
+import { notifyDigest, reconcile, signature, suppress, composedBody, composedHtml, unsubscribeUrl, sendApproved, syncInbox } from './mail';
 import { tick, researchBacklog } from './engine';
 import {tickWorkspaces} from './engine';
 export {ProductWorkspace} from './product-store';
@@ -20,7 +20,7 @@ import {notificationPage,readNotifications} from './notifications';
 import {providerBlock,clearProviderBlock,assertProviderAvailable} from './provider-control';
 import {prepareWorkspaceSettings} from './workspace-settings';
 import {backfillAdmissions,qualifiedToday} from './qualified-prospects';
-import {discoveryProgress} from './discovery-cycles';
+import {discoveryProgress,searchTarget} from './discovery-cycles';
 
 const isDatabaseLimit=(e:unknown)=>/D1_ERROR:.*(?:daily row (?:read|write) limit|free tier|quota)/i.test(e instanceof Error?e.message:'');
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -71,6 +71,9 @@ async function dashboard(env:Env,compact=false,saved=false) {
  if(!saved)metrics.campaign=await discoveryProgress(env,s);
  const enrichedDrafts=(drafts as any[]).filter(d=>d.status==='sent'||readyPage.rows.some((l:any)=>l.draft_id===d.id)).map(d=>{const l=(leads as Lead[]).find(l=>l.id===d.lead_id);return {...d,sendIssues:l?approvalProblems(d,{...l,eligibility:l.eligibility==='ineligible'?'ineligible':'eligible',eligibility_note:'Confirmed at approval',verification:l.verification==='invalid'?'invalid':'owner_reviewed'},s):['Prospect record not in current view']};});
  const pipeline={provider:'openai',providerBlock:saved?null:await providerBlock(env),pausedJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('paused','paused_provider')"))?.n||0,waitingResearch:await researchBacklog(env),attentionJobs:(await one<{n:number}>(env,"SELECT COUNT(*) n FROM jobs WHERE state IN ('failed','uncertain')"))?.n||0};
+ const cycleId=metrics.campaign?.id||'';
+ const issues=saved?[]:await all(env,`SELECT j.id,j.kind,j.state,j.error,l.company FROM jobs j LEFT JOIN leads l ON l.id=j.lead_id WHERE j.state IN ('failed','uncertain','paused','paused_provider') AND EXISTS(SELECT 1 FROM discovery_cycle_batches cb JOIN discovery_batches b ON b.id=cb.batch_id WHERE cb.cycle_id=? AND (b.job_id=j.id OR EXISTS(SELECT 1 FROM discovery_candidates c WHERE c.batch_id=b.id AND c.lead_id=j.lead_id))) ORDER BY j.updated_at DESC LIMIT 10`,cycleId);
+ Object.assign(pipeline,{issues});
  const reviewDrafts=env.PRODUCT_ID&&!saved?await all(env,"SELECT d.id,d.lead_id,d.subject,d.quality_hold,l.company FROM drafts d JOIN leads l ON l.id=d.lead_id WHERE d.kind='initial' AND d.status='pending' AND d.quality_hold LIKE ? ORDER BY d.created_at DESC LIMIT 50",'Product-fit rules updated;%'):[];
  return {reviewDrafts,settings:s,locationOptions,connections:connections(env,s),metrics,stats,usage,budgets,pipeline,drafts:enrichedDrafts,leads,messages,jobs,events,runs,notifications,expenses,date:day()};
 }
@@ -92,15 +95,15 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  }
  if(path==='/api/discover'||path==='/api/discovery/sync'){
   if(path==='/api/discover'){
-   if(env.PRODUCT_ID)return requestProductDiscovery(env);
+   if(env.PRODUCT_ID)return requestProductDiscovery(env,searchTarget(input.target));
   }
   if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
   if(path==='/api/discovery/sync')return {ok:true,message:'Search stages resume automatically.'};
-  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) AND created_at>=? LIMIT 1",day()+'T00:00:00.000Z');
+  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) LIMIT 1");
   if(active)return {state:active.state,runId:active.id,message:'Your prospect search is already running or queued. Results appear automatically.'};
   if(env.PRODUCT_ID)return startDiscovery(env,s,nextProductCampaign(s,await searchHistory(env)),crypto.randomUUID(),true);
-  const plan=env.PRODUCT_ID?s.campaigns.filter(c=>c.enabled):manualSearchPlan(s,await searchHistory(env));const batch=crypto.randomUUID();let first;
-  for(const [index,campaign] of plan.entries()){const result=await startDiscovery(env,s,campaign,batch+':'+index,true);if(!first)first=result;}
+  const plan=manualSearchPlan(s,await searchHistory(env)).slice(0,1);const batch=crypto.randomUUID();let first;
+  for(const [index,campaign] of plan.entries()){const result=await startDiscovery(env,s,campaign,batch+':'+index,true,false,searchTarget(input.target));if(!first)first=result;}
   return {...first,locations:plan.map(c=>c.location),message:plan.length>1?`Queued ${plan.length} location searches. Public business research continues automatically.`:first?.message};
  }
  if(path==='/api/notify'){await notifyDigest(env,s,true);return {ok:true};}
@@ -204,7 +207,7 @@ async function readWorkspace(request:Request,env:Env,saved=false):Promise<Respon
  const preview=path.match(/^\/api\/drafts\/([^/]+)\/preview$/);
  if(preview&&request.method==='GET'){
   const d=await one<Draft>(env,'SELECT * FROM drafts WHERE id=?',preview[1]);if(!d)return json({error:'Not found'},404);
-  const s=await settings(env);return json({from:`${s.senderName} <${env.SENDER_EMAIL||''}>`,subject:d.subject,body:composedBody(d,s,await unsubscribeUrl(env,d.lead_id))});
+  const s=await settings(env);return json({from:`${s.senderName} <${env.SENDER_EMAIL||''}>`,subject:d.subject,body:composedBody(d,s,await unsubscribeUrl(env,d.lead_id)),html:composedHtml(d,s,await unsubscribeUrl(env,d.lead_id)),senderName:s.senderName,unsubscribeUrl:await unsubscribeUrl(env,d.lead_id)});
  }
  return json({error:'Not found'},404);
 }

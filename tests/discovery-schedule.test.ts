@@ -23,29 +23,18 @@ test('one product search request generates and applies its profile and then queu
  try{
   const p=await saveProduct(x.env,{name:'Pump product',website:'https://pumps.example.com',description:'Quotation workflow product',sender_email:'data@prepyr.com'});
   const scope=await scopeProduct(x.env,p);assert.equal((await settings(scope)).prospectingPaused,undefined);
-  assert.equal((await requestProductDiscovery(scope))?.state,'profiling');assert.equal(ai.calls.length,0);
+  assert.equal((await requestProductDiscovery(scope,25))?.state,'profiling');assert.equal(ai.calls.length,0);
   for(let i=0;i<4;i++)await tickWorkspaces(x.env);
   const fresh=await product(x.env,p.id);assert.equal(fresh.state,'approved');assert.equal(fresh.approved_revision,fresh.revision);
-  assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,1);
+  assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,1);assert.equal((await one<any>(scope,'SELECT target FROM discovery_cycles')).target,25);
   assert.equal(ai.calls.filter(c=>c.text?.format?.name==='relay_product_extract').length,1);
   assert.equal((await all(scope,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=original;x.close();}
 });
 
-test('unfinished manual searches expire at the day boundary and cannot restart until another click',async()=>{
+test('an explicitly requested search continues across midnight without creating another cycle',async()=>{
  const x=database(),original=globalThis.fetch,ai=mockOpenAI();x.env.OPENAI_API_KEY='mock';globalThis.fetch=ai.fetcher;
- try{
-  await startDiscovery(x.env,testSettings);
-  const yesterday=new Date(Date.parse(day()+'T00:00:00Z')-86400000).toISOString();
-  await run(x.env,'UPDATE discovery_cycles SET created_at=?',yesterday);
-  await run(x.env,'UPDATE discovery_batches SET created_at=?',yesterday);
-  await run(x.env,"UPDATE jobs SET created_at=?,payload=json_set(payload,'$.campaignDay',?)",yesterday,yesterday.slice(0,10));
-  for(let i=0;i<3;i++)await tick(x.env);
-  assert.equal(ai.calls.length,0);assert.equal((await one<any>(x.env,'SELECT state FROM jobs'))!.state,'cancelled');
-  assert.equal((await all(x.env,'SELECT * FROM discovery_batches')).length,1);
-  assert.equal((await startDiscovery(x.env,testSettings)).state,'queued');
-  assert.equal((await all(x.env,'SELECT * FROM discovery_cycles')).length,2);
- }finally{globalThis.fetch=original;x.close();}
+ try{await startDiscovery(x.env,testSettings);const yesterday=new Date(Date.now()-86400000).toISOString();await run(x.env,'UPDATE discovery_cycles SET created_at=?',yesterday);await run(x.env,'UPDATE discovery_batches SET created_at=?',yesterday);await run(x.env,"UPDATE jobs SET created_at=?,payload=json_set(payload,'$.campaignDay',?)",yesterday,yesterday.slice(0,10));await tick(x.env);assert.ok(ai.calls.length>0);assert.equal((await all(x.env,'SELECT * FROM discovery_cycles')).length,1);}finally{globalThis.fetch=original;x.close();}
 });
 
 test('new products retain independent targets and research capacity without a workspace pause',async()=>{
@@ -84,4 +73,13 @@ test('manual-mode migration unpauses research without dispatching older email ap
   assert.equal(updated.status,'pending');assert.equal(updated.approved_hash,null);assert.equal(updated.body,draft.body);
   assert.equal((await one<any>(x.env,'SELECT status FROM drafts WHERE id=?',sent.id))!.status,'sent');
  }finally{x.close();}
+});
+
+test('Existing outreach records admissions immediately and finishes its requested cap without dashboard polling',async()=>{
+ const x=database(),original=globalThis.fetch,ai=mockOpenAI();Object.assign(x.env,{OPENAI_API_KEY:'mock',AI_STAGES_PER_CYCLE:'3'});globalThis.fetch=ai.fetcher;
+ try{
+  await run(x.env,'INSERT INTO settings VALUES(1,?)',JSON.stringify(testSettings));await startDiscovery(x.env,testSettings,undefined,undefined,true,false,1);
+  for(let i=0;i<15;i++)await tick(x.env);
+  const cycle=await one<any>(x.env,'SELECT * FROM discovery_cycles');assert.equal(cycle.target,1);assert.ok(cycle.completed_at);assert.equal((await all(x.env,'SELECT * FROM qualified_prospects')).length,1);assert.equal((await all(x.env,'SELECT * FROM drafts')).length,1);assert.equal((await all(x.env,'SELECT * FROM discovery_batches')).length,1);
+ }finally{globalThis.fetch=original;x.close();}
 });

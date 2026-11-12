@@ -19,16 +19,15 @@ test('actual UI to API to database sends an edited email and a follow-up, updati
   (dom.window as any).fetch=(path:string,init:any)=>worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,context);
   dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-open]'));
   (doc.querySelector('[data-view="settings"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#sender-form'));
-  const address='G-401, Royal Legend, Bengaluru - 560068, India';(doc.querySelector('[name="businessAddress"]') as HTMLInputElement).value=address;
-  assert.equal((doc.querySelector('#sender-form') as HTMLFormElement).checkValidity(),true);
-  (doc.querySelector('#sender-form button[type=submit]') as HTMLButtonElement).click();await until(()=>doc.querySelector('#sender-save-status')?.textContent?.includes('Saved')===true);
-  (doc.querySelector('#refresh') as HTMLElement).click();await new Promise(r=>setTimeout(r,40));assert.equal((doc.querySelector('[name="businessAddress"]') as HTMLInputElement).value,address);
+  assert.equal(doc.querySelector('[name="businessAddress"]'),null);
   (doc.querySelector('[data-view="prospects"]') as HTMLElement).click();await until(()=>!!doc.querySelector('[data-open]'));assert.doesNotMatch(doc.querySelector('#content')!.textContent!,/Add your postal address/);
   (doc.querySelector('[data-open]') as HTMLElement).click();await until(()=>!!doc.querySelector('[data-send]'));
   const edited='Your catalogue lists connection sizes. I can send a free pump quote checklist that captures flange dimensions and operating pressure.';(doc.querySelector('[name="body"]') as HTMLTextAreaElement).value=edited;
   const button=doc.querySelector('[data-send]') as HTMLButtonElement;button.click();button.click();await until(()=>!(doc.querySelector('#modal') as HTMLDialogElement).open);
   assert.equal(sends,1);assert.equal((await one<any>(env,'SELECT body FROM drafts WHERE id=?',d.id)).body,edited);assert.equal((await one<any>(env,'SELECT status FROM drafts WHERE id=?',d.id)).status,'sent');assert.match(doc.querySelector('#content')!.textContent!,/Sent/);
-  const encodedBody=wireBodies[0].split('\r\n\r\n')[1];assert.match(Buffer.from(encodedBody,'base64').toString(),/free pump quote checklist/);assert.ok(Buffer.from(encodedBody,'base64').toString().includes(address));
+  const parts=[...wireBodies[0].matchAll(/Content-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+)/g)].map(m=>Buffer.from(m[1],'base64').toString());
+  assert.equal(parts.length,2);assert.match(parts[0],/free pump quote checklist/);assert.match(parts[1],/>Unsubscribe<\/a>/);assert.doesNotMatch(parts.join(''),/Business proposal|Example business address/);
+
   const followup=await readyDraft(env,l);await run(env,"UPDATE drafts SET status='pending',kind='followup' WHERE id=?",followup.id);await run(env,"UPDATE leads SET next_followup_at=? WHERE id=?",new Date(Date.now()-1000).toISOString(),l.id);
   (doc.querySelector('#refresh') as HTMLElement).click();await until(()=>!!doc.querySelector(`[data-email="${followup.id}"]`));(doc.querySelector(`[data-email="${followup.id}"]`) as HTMLElement).click();await until(()=>!!doc.querySelector(`[data-send="${followup.id}"]`));(doc.querySelector('[data-send]') as HTMLElement).click();await until(()=>!(doc.querySelector('#modal') as HTMLDialogElement).open);
   assert.equal(sends,2);assert.equal((await one<any>(env,'SELECT followup_count FROM leads WHERE id=?',l.id)).followup_count,1);

@@ -12,8 +12,8 @@ async function request(route,body){return fetch(origin+route,{method:body===unde
 async function check(label,fn){await fn();checks.push({check:label,passed:true});console.log('PASS '+label);}
 await check('published interface has Search prospects and no pause controls',async()=>{
  const response=await request('/');assert.equal(response.status,200);assert.ok(response.headers.get('content-security-policy'));
- const html=await response.text();assert.doesNotMatch(html,/outreach-toggle|outreach-state|Pause Relay|Resume Relay/);
- const js=await request('/app.js');assert.equal(js.status,200);const code=await js.text();assert.match(code,/Search prospects/);assert.doesNotMatch(code,/data-product-approve|Pause Relay|Resume Relay/);
+ const html=await response.text();assert.doesNotMatch(html,/outreach-toggle|outreach-state|Pause Relay|Resume Relay|live-status|YOUR DAILY PACE/);assert.match(html,/theme-toggle/);assert.match(html,/theme\.js/);const theme=await request('/theme.js');assert.equal(theme.status,200);assert.match(await theme.text(),/relay-theme/);
+ const js=await request('/app.js');assert.equal(js.status,200);const code=await js.text();assert.match(code,/Search prospects/);assert.match(code,/name="searchTarget"/);assert.match(code,/theme-preference/);assert.doesNotMatch(code,/data-product-approve|Pause Relay|Resume Relay/);
 });
 await check('health and anonymous access protection',async()=>{
  const health=await request('/health');assert.equal(health.status,200);assert.equal((await health.json()).ok,true);

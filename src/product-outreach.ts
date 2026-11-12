@@ -22,7 +22,7 @@ export async function draftProductLead(env:Env,s:Settings,lead:Lead,kind:Draft['
  const existing=rewrite?await one<Draft>(env,"SELECT * FROM drafts WHERE id=? AND lead_id=? AND version=? AND status='pending'",rewrite.id,lead.id,rewrite.version):null;
  if(rewrite&&!existing)return;
  if(!rewrite&&await one(env,"SELECT id FROM drafts WHERE lead_id=? AND status IN ('pending','approved','sending','uncertain')",lead.id))return;
- if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Qualified email target reached for this UTC day');
+ if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Search target reached');
  if(lead.eligibility==='ineligible'||['suppressed','closed','bounced'].includes(lead.status)||await one({...env,DB:env.GLOBAL_DB||env.DB},'SELECT email FROM suppressions WHERE email=?',lead.email))return;
  const discovered=await one<{data:string}>(env,'SELECT data FROM discovery_candidates WHERE lead_id=? ORDER BY created_at LIMIT 1',lead.id);
  const discoveryEvidence=discovered?JSON.parse(discovered.data):{sourceUrl:lead.source_url,role:lead.contact_name};
@@ -86,7 +86,7 @@ export async function draftProductLead(env:Env,s:Settings,lead:Lead,kind:Draft['
  const offer=JSON.stringify({type:'product',productId:env.PRODUCT_ID,authorizedFreeOffer:kind==='initial'?s.freeOffer:undefined,remarksApplied:parsed.remarksApplied,useCase:dossier.productUseCase});
  await assertProductCurrent(env);
  const greeting=String(lead.contact_name||lead.company+' team').replace(/[\r\n]/g,' '),body=`Hi ${greeting},\n\n${String(parsed.body).trim()}`,subject=String(kind==='reply'?(messages.find(m=>m.direction==='inbound')?.subject||previous?.subject||parsed.subject):kind==='followup'?(previous?.subject||parsed.subject):parsed.subject).replace(/[\r\n]/g,' ').slice(0,180);
- if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Qualified email target reached for this UTC day');
+ if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Search target reached');
  if(rewrite){await run(env,"UPDATE drafts SET subject=?,body=?,artifact='',evidence=?,rationale=?,warnings=?,quality_hold=?,free_offer=?,version=version+1,approved_version=NULL,approved_hash=NULL,approved_at=NULL,updated_at=? WHERE id=? AND version=? AND status='pending'",subject,body,JSON.stringify(observed),parsed.opportunity,JSON.stringify(parsed.warnings),reason,offer,now(),rewrite.id,rewrite.version);if(kind==='initial')await recordAdmission(env,lead.id,rewrite.id);return;}
  const inbound=inboundId?await one<any>(env,'SELECT rfc_id FROM messages WHERE id=?',inboundId):null,id=uid();
  if(!await conversationReady(env,lead,kind,s))return;

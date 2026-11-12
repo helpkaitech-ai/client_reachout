@@ -13,8 +13,11 @@ export async function signature(env:Env,text:string) {
 export async function unsubscribeUrl(env:Env,leadId:string) {
  return `${env.APP_URL}/unsubscribe?id=${encodeURIComponent(leadId)}${env.PRODUCT_ID?'&product='+encodeURIComponent(env.PRODUCT_ID):''}&sig=${await signature(env,'unsubscribe:'+(env.PRODUCT_ID?env.PRODUCT_ID+':':'')+leadId)}`;
 }
-export function composedBody(d:Draft,s:Settings,url:string) {
- return `${d.body.trim()}${d.artifact.trim()?'\n\nFree sample\n-----------\n'+d.artifact.trim():''}\n\n${s.senderName}${s.businessAddress.trim()?'\n'+s.businessAddress.trim():''}\n\nBusiness proposal. To stop future emails, reply “unsubscribe” or visit ${url}`;
+const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+function messageText(d:Draft,s:Settings){return `${d.body.trim()}${d.artifact.trim()?'\n\nFree sample\n'+d.artifact.trim():''}\n\n${s.senderName}`;}
+export function composedBody(d:Draft,s:Settings,_url:string){return messageText(d,s)+'\n\nTo unsubscribe, reply “unsubscribe”.';}
+export function composedHtml(d:Draft,s:Settings,url:string){
+ return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#222">${escapeHtml(messageText(d,s)).replace(/\n/g,'<br>')}<p style="font-size:12px"><a href="${escapeHtml(url)}" style="color:#666">Unsubscribe</a></p></div>`;
 }
 export async function suppress(env:Env,lead:Lead,reason:string) {
  if(lead.email) await run({...env,DB:env.GLOBAL_DB||env.DB},'INSERT OR IGNORE INTO suppressions(email,reason,created_at) VALUES(?,?,?)',lead.email,reason,now());
@@ -52,15 +55,11 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  if(errors.length){await run(env,"UPDATE drafts SET status='pending',approved_hash=NULL,error=?,updated_at=? WHERE id=?",errors.join('; '),now(),draft.id);return;}
  const sendAs=await gmail(env,'settings/sendAs');
  if(!sendAs.sendAs?.some((a:any)=>a.sendAsEmail.toLowerCase()===env.SENDER_EMAIL!.toLowerCase()&&a.verificationStatus==='accepted'))throw new Error('Configured sender is not an accepted Gmail send-as address');
- const quota=await one<{new_slots:number;send_slots:number}>(env,'SELECT * FROM daily_usage WHERE day=?',day());
- if((quota?.send_slots||0)>=s.dailyTotalLimit||(draft.kind==='initial'&&(quota?.new_slots||0)>=s.dailyNewLimit)){
-  await run(env,'UPDATE drafts SET error=? WHERE id=?','Daily send limit reached. Already approved; sending resumes automatically when the quota resets.',draft.id);return;
- }
- // Reserve daily slots conservatively; uncertain and failed dispatches never free a slot automatically.
- if(!await claimDaily(env,'send_slots',s.dailyTotalLimit))return;
- if(draft.kind==='initial'&&!await claimDaily(env,'new_slots',s.dailyNewLimit))return;
+ // Usage is tracked for reporting, without a daily sending cap.
+ await claimDaily(env,'send_slots',Number.MAX_SAFE_INTEGER);
+ if(draft.kind==='initial')await claimDaily(env,'new_slots',Number.MAX_SAFE_INTEGER);
  const messageId=`<${draft.id}@${env.SENDER_EMAIL.split('@')[1]}>`;
- const raw=mimeMessage({from:env.SENDER_EMAIL,name:s.senderName,to:lead.email!,subject:draft.subject,body:composedBody(draft,s,await unsubscribeUrl(env,lead.id)),messageId,replyToId:draft.in_reply_to,unsubscribe:await unsubscribeUrl(env,lead.id)});
+ const raw=mimeMessage({from:env.SENDER_EMAIL,name:s.senderName,to:lead.email!,subject:draft.subject,body:composedBody(draft,s,await unsubscribeUrl(env,lead.id)),html:composedHtml(draft,s,await unsubscribeUrl(env,lead.id)),messageId,replyToId:draft.in_reply_to,unsubscribe:await unsubscribeUrl(env,lead.id)});
  const claimed=await run(env,`UPDATE drafts SET status='sending',message_id=?,updated_at=? WHERE id=? AND status='approved' AND version=?
  AND NOT EXISTS(SELECT 1 FROM suppressions WHERE email=?) AND EXISTS(SELECT 1 FROM leads WHERE id=? AND status NOT IN ('suppressed','closed','bounced'))`,messageId,now(),draft.id,draft.version,lead.email,lead.id);
  if(!claimed.meta.changes)return;

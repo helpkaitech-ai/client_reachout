@@ -23,7 +23,7 @@ export function withinWindow(date:Date,timezone:string,s:Settings) {
 }
 export async function digest(value:string) {return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))).map(b=>b.toString(16).padStart(2,'0')).join('');}
 export async function approvalHash(d:Draft,l:Lead,s:Settings,sender:string) {
- return digest(JSON.stringify([d.id,d.version,d.subject,d.body,d.artifact,d.kind,d.in_reply_to,l.email,s.senderName,s.businessAddress,sender]));
+ return digest(JSON.stringify([d.id,d.version,d.subject,d.body,d.artifact,d.kind,d.in_reply_to,l.email,s.senderName,sender]));
 }
 export function approvalProblems(d:Draft,l:Lead,s:Settings):string[] {
  const errors:string[]=[];
@@ -33,7 +33,6 @@ export function approvalProblems(d:Draft,l:Lead,s:Settings):string[] {
  if(l.contact_status==='conflicting')errors.push('Public contact evidence conflicts with the recipient; resolve it in contact review');
  if(['suppressed','bounced','closed'].includes(l.status)) errors.push('This business is blocked from outreach');
  if(d.kind==='followup'&&(l.last_inbound_at||!l.next_followup_at||l.followup_count>=Math.min(3,s.followupDays.length)))errors.push('This follow-up sequence has stopped or reached its limit');
- if(!s.businessAddress.trim())errors.push('Sending activation requires a valid business postal address or qualifying mailbox in Settings');
  if(d.quality_hold)errors.push(d.quality_hold);
  if(!d.subject.trim()||d.subject.length>180||/[\r\n]/.test(d.subject)) errors.push('Use a single-line subject of 1–180 characters');
  if(d.body.trim().length<30) errors.push('The message is too short');

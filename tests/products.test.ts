@@ -61,7 +61,7 @@ test('the same business and email have independent product conversations and bud
  }finally{globalThis.fetch=original;close();}
 });
 
-test('twelve sends exhaust only that product and each accepted sender identity is used in Gmail MIME',async()=>{
+test('sending exceeds the former daily cap and uses each product sender',async()=>{
  const {env,close}=database();Object.assign(env,{OPENAI_API_KEY:'fixture',ENABLE_SENDING:'true',GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',GOOGLE_REFRESH_TOKEN:'fixture'});
  const original=globalThis.fetch;globalThis.fetch=mockOpenAI().fetcher;const raw:string[]=[];
  try{
@@ -71,8 +71,8 @@ test('twelve sends exhaust only that product and each accepted sender identity i
   globalThis.fetch=(async(url:any,init?:RequestInit)=>{if(String(url).includes('settings/sendAs'))return Response.json({sendAs:[{sendAsEmail:'data@prepyr.com',verificationStatus:'accepted'},{sendAsEmail:'alias@example.org',verificationStatus:'accepted'}]});return mockGoogle(body=>{raw.push(Buffer.from(body.raw,'base64url').toString());return Response.json({id:'sent-'+raw.length,threadId:'thread-'+raw.length});})(url,init);}) as typeof fetch;
   await run(a,'INSERT INTO daily_usage(day,send_slots,new_slots) VALUES(?,11,11)',day());
   const first=await readyDraft(a,await readyLead(a));await sendApproved(a,await settings(a));assert.equal((await one<any>(a,'SELECT status FROM drafts WHERE id=?',first.id)).status,'sent');
-  const held=await readyDraft(a,await readyLead(a,{company:'Another supplier',email:'another@example.org'}));await sendApproved(a,await settings(a));assert.equal((await one<any>(a,'SELECT status FROM drafts WHERE id=?',held.id)).status,'approved');
-  await readyDraft(b,await readyLead(b));await sendApproved(b,await settings(b));assert.equal(raw.length,2);assert.match(raw[1],/alias@example.org/);assert.equal((await one<any>(a,'SELECT send_slots FROM daily_usage')).send_slots,12);assert.equal((await one<any>(b,'SELECT send_slots FROM daily_usage')).send_slots,1);
+  const held=await readyDraft(a,await readyLead(a,{company:'Another supplier',email:'another@example.org'}));await sendApproved(a,await settings(a));assert.equal((await one<any>(a,'SELECT status FROM drafts WHERE id=?',held.id)).status,'sent');
+  await readyDraft(b,await readyLead(b));await sendApproved(b,await settings(b));assert.equal(raw.length,3);assert.match(raw[2],/alias@example.org/);assert.equal((await one<any>(a,'SELECT send_slots FROM daily_usage')).send_slots,13);assert.equal((await one<any>(b,'SELECT send_slots FROM daily_usage')).send_slots,1);
  }finally{globalThis.fetch=original;close();}
 });
 

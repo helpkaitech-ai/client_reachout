@@ -38,9 +38,16 @@ export async function rejectCandidate(env:Env,lead:Lead,jobId:string,reason:stri
 export async function qualifiedToday(env:Env){
  return (await one<{n:number}>(env,`SELECT COUNT(DISTINCT lower(l.email)) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id WHERE q.admitted_at>=? AND d.kind='initial' AND ${readyDraftSql(!!env.PRODUCT_ID)}`,day()+'T00:00:00.000Z'))?.n||0;
 }
+export async function qualifiedInCycle(env:Env,id:string){
+ return (await one<{n:number}>(env,`SELECT COUNT(DISTINCT lower(l.email)) n FROM qualified_prospects q JOIN drafts d ON d.id=q.draft_id JOIN leads l ON l.id=q.lead_id JOIN discovery_candidates c ON c.lead_id=q.lead_id JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id JOIN discovery_cycles cy ON cy.id=b.cycle_id WHERE b.cycle_id=? AND c.outcome='imported' AND q.admitted_at>=cy.created_at AND ${readyDraftSql(!!env.PRODUCT_ID)}`,id))?.n||0;
+}
+export async function cycleForLead(env:Env,leadId:string){
+ return one<any>(env,`SELECT cy.* FROM discovery_cycles cy JOIN discovery_cycle_batches b ON b.cycle_id=cy.id JOIN discovery_candidates c ON c.batch_id=b.batch_id WHERE c.lead_id=? AND c.outcome='imported' ORDER BY cy.created_at DESC,cy.rowid DESC LIMIT 1`,leadId);
+}
 export async function admissionAvailable(env:Env,s:Settings,leadId:string){
  if(await one(env,'SELECT lead_id FROM qualified_prospects WHERE lead_id=?',leadId))return true;
- return await qualifiedToday(env)<s.dailyLeadLimit;
+ const cycle=await cycleForLead(env,leadId);
+ return !cycle||(!cycle.completed_at&&await qualifiedInCycle(env,cycle.id)<cycle.target);
 }
 export async function recordAdmission(env:Env,leadId:string,draftId:string){
  await run(env,'INSERT OR IGNORE INTO qualified_prospects(lead_id,draft_id,admitted_at) VALUES(?,?,?)',leadId,draftId,now());

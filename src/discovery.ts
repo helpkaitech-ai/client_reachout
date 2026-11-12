@@ -21,19 +21,19 @@ export {importLead} from './leads';
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,productFit:fitSignalSchema,company:str,contact_name:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},contactScope:{type:'string',enum:['organization','public_professional','private_consumer']},sensitivePersonalTarget:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
-export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=true,continuation=false){
+export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=true,continuation=false,target=s.dailyLeadLimit){
  const owner=await acquire(env,'discovery-enqueue',60);
  if(!owner)return {state:'queued',runId:undefined,message:'Search already queued.'};
- try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation);}finally{await release(env,'discovery-enqueue',owner);}
+ try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation,target);}finally{await release(env,'discovery-enqueue',owner);}
 }
-async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean){
+async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean,target:number){
  requireProductReady(env);
  if(!manual)return {state:'manual_only',message:'Click Find prospects to start a search. Recurring searches are disabled.'};
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
- const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) AND created_at>=? ORDER BY created_at LIMIT 1",now().slice(0,10)+'T00:00:00.000Z');
+ const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) ORDER BY created_at LIMIT 1");
  if(active&&(!intent||env.PRODUCT_ID))return {state:active.state,runId:active.id,message:'Search in progress.'};
- const cycle=await prepareDiscoveryCycle(env,s,manual,continuation);
- const reasons={manual_only:'Click Find prospects to start today’s search. Recurring searches are disabled.',daily_target:`This workspace has reached its ${s.dailyLeadLimit} distinct qualified prospects for today. The allowance resets at 00:00 UTC; click Find prospects on a new day.`,research_limit:`Used ${s.dailyResearchLimit} candidate research attempts today. Increase the research allowance to keep replacing rejected candidates.`,researching:'The requested campaign is researching candidates and will search for replacements as needed.',search_limit:'The bounded search allowance was reached before the qualified target. Review targeting, locations and the research allowance.'};
+ const cycle=await prepareDiscoveryCycle(env,s,manual,continuation,target);
+ const reasons={manual_only:'Click Search prospects to start.',researching:'Search in progress.'};
  if(cycle&&cycle.state!=='ready')return {state:cycle.state,message:reasons[cycle.state]};
  await assertProviderAvailable(env);
  const history=await searchHistory(env),searchIndex=history.reduce((n,h)=>n+Number(h.uses),0),cases=productUseCases(env),useCase=cases[searchIndex%cases.length];

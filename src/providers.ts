@@ -30,11 +30,17 @@ export async function gmail(env:Env,path:string,init:RequestInit={},token?:strin
  return jsonRequest('Gmail',`https://gmail.googleapis.com/gmail/v1/users/me/${path}`,{...init,headers:{Authorization:`Bearer ${token||await googleAccessToken(env)}`,'Content-Type':'application/json',...init.headers}});
 }
 export function base64url(text:string) { return Buffer.from(text,'utf8').toString('base64url'); }
-export function mimeMessage(params:{from:string;name:string;to:string;subject:string;body:string;messageId:string;replyToId?:string|null;unsubscribe?:string}) {
- for(const value of [params.from,params.to,params.name,params.subject,params.messageId,params.replyToId||'']) if(/[\r\n]/.test(value)) throw new Error('Email header contains a newline');
+export function mimeMessage(params:{from:string;name:string;to:string;subject:string;body:string;html?:string;messageId:string;replyToId?:string|null;unsubscribe?:string}) {
+ for(const value of [params.from,params.to,params.name,params.subject,params.messageId,params.replyToId||'',params.unsubscribe||'']) if(/[\r\n]/.test(value)) throw new Error('Email header contains a newline');
  const headers=[`From: =?UTF-8?B?${Buffer.from(params.name).toString('base64')}?= <${params.from}>`,`To: ${params.to}`,`Subject: =?UTF-8?B?${Buffer.from(params.subject).toString('base64')}?=`,`Message-ID: ${params.messageId}`,'MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: base64'];
  if(params.replyToId) headers.push(`In-Reply-To: ${params.replyToId}`,`References: ${params.replyToId}`);
  if(params.unsubscribe) headers.push(`List-Unsubscribe: <${params.unsubscribe}>`,'List-Unsubscribe-Post: List-Unsubscribe=One-Click');
+ if(params.html!==undefined){
+  const boundary='relay-'+crypto.randomUUID();
+  headers.splice(5,2,`Content-Type: multipart/alternative; boundary="${boundary}"`);
+  const part=(type:string,body:string)=>`--${boundary}\r\nContent-Type: ${type}; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(body,'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n')||''}\r\n`;
+  return base64url(headers.join('\r\n')+'\r\n\r\n'+part('text/plain',params.body)+part('text/html',params.html)+`--${boundary}--\r\n`);
+ }
  const encoded=Buffer.from(params.body,'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n')||'';
  return base64url(headers.join('\r\n')+'\r\n\r\n'+encoded);
 }

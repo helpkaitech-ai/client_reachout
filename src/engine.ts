@@ -7,12 +7,12 @@ import {UncertainProviderError,ProviderError} from './providers';
 import {StageYield,type Workflow} from './ai';
 import {requireProductReady,productList,scopeProduct,advanceProductAnalysis,continueProductDiscovery} from './products';
 import {providerBlock,OpenAICreditBlocked,releaseUnspentResearchClaim} from './provider-control';
-import {admissionAvailable} from './qualified-prospects';
-import {manualCampaignPending} from './discovery-cycles';
+import {admissionAvailable,cycleForLead} from './qualified-prospects';
+import {manualCampaignPending,cycleAllowance} from './discovery-cycles';
 
 export async function scheduleResearch(env:Env,manualOnly=false){
  const at=now(),prefix=env.PRODUCT_ID?'initial-product:'+env.PRODUCT_REVISION+':':'initial-ai:';
- const manual=`EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_batches b ON b.id=c.batch_id JOIN jobs dj ON dj.id=b.job_id WHERE c.lead_id=leads.id AND json_extract(dj.payload,'$.manual')=1 AND EXISTS(SELECT 1 FROM discovery_cycle_batches cb JOIN discovery_cycles cy ON cy.id=cb.cycle_id WHERE cb.batch_id=b.id AND cy.completed_at IS NULL AND cy.created_at>='${day()}T00:00:00.000Z' AND cy.product_revision=${env.PRODUCT_REVISION||0}))`;
+ const manual=`EXISTS(SELECT 1 FROM discovery_candidates c JOIN discovery_batches b ON b.id=c.batch_id JOIN jobs dj ON dj.id=b.job_id WHERE c.lead_id=leads.id AND json_extract(dj.payload,'$.manual')=1 AND EXISTS(SELECT 1 FROM discovery_cycle_batches cb JOIN discovery_cycles cy ON cy.id=cb.cycle_id WHERE cb.batch_id=b.id AND cy.completed_at IS NULL AND cy.product_revision=${env.PRODUCT_REVISION||0}))`;
  await run(env,`INSERT OR IGNORE INTO jobs(id,kind,lead_id,payload,created_at,updated_at)
  SELECT ?||id,'research',id,CASE WHEN ${manual} THEN json_object('manual',json('true'),'campaignDay','${day()}') ELSE '{}' END,?,? FROM leads WHERE status IN ('new','researched','held')
  ${manualOnly?'AND '+manual:''}
@@ -38,7 +38,6 @@ export async function processJob(env:Env,job:Job){
  if(await providerBlock(env))return {paused:true};
  const claim=await run(env,"UPDATE jobs SET state='running',attempts=attempts+1,error=NULL,updated_at=? WHERE id=? AND state='pending'",now(),job.id);if(!claim.meta.changes)return;
  const payload=JSON.parse(job.payload);
- if(['research','discover_search'].includes(job.kind)&&payload.manual&&(payload.campaignDay||job.created_at?.slice(0,10))!==day()){await run(env,"UPDATE jobs SET state='cancelled',error='Search request expired at the UTC day boundary; click Find prospects for today',updated_at=? WHERE id=?",now(),job.id);return;}
  const w:Workflow={jobId:job.id,paidCalls:0,retryVersion:payload.retryVersion||0,priority:['reply','followup'].includes(job.kind),maxCost:payload.maxCost};
  try{
   requireProductReady(env);
@@ -51,10 +50,14 @@ export async function processJob(env:Env,job:Job){
    const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',job.lead_id);if(!lead)throw new Error('Prospect not found');
    if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');
    if(job.kind==='research'&&!await admissionAvailable(env,s,lead.id)){
-    await run(env,"UPDATE jobs SET state='paused',error='Qualified email target reached for this UTC day',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
+    await run(env,"UPDATE jobs SET state='cancelled',error='Search target reached',next_run_at=NULL,updated_at=? WHERE id=?",now(),job.id);return;
    }
-   if(job.kind==='research'&&!await claimResearchBusiness(env,lead.id,s.dailyResearchLimit)){
-    await run(env,"UPDATE jobs SET state='paused',error='Daily business research allowance reached',next_run_at=?,updated_at=? WHERE id=?",new Date(Date.parse(day()+'T00:00:00Z')+86400000).toISOString(),now(),job.id);return;
+   if(job.kind==='research'){
+    const cycle=await cycleForLead(env,lead.id),allowance=cycle?await cycleAllowance(env,s,cycle):null;
+    if(allowance&&allowance.attempts>=allowance.researchLimit&&!await one(env,'SELECT lead_id FROM research_claims WHERE lead_id=?',lead.id)){
+     await run(env,"UPDATE jobs SET state='paused',error='Search research allowance reached',next_run_at=NULL,updated_at=? WHERE id=?",now(),job.id);return;
+    }
+    await claimResearchBusiness(env,lead.id,Number.MAX_SAFE_INTEGER);
    }
    const kind=job.kind==='reply'?'reply':job.kind==='followup'?'followup':job.kind==='rewrite'&&['followup','reply'].includes(payload.kind)?payload.kind:'initial';
    await draftLead(env,s,lead,kind,payload.inboundId,job.kind==='rewrite'?{id:payload.draftId,version:payload.version}:undefined,w);

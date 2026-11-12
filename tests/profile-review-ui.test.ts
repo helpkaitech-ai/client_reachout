@@ -36,7 +36,7 @@ test('a pending profile leaves Find prospects available without approval or resu
  const x=await boot();try{
   assert.equal(x.doc.querySelector('[data-product-approve]'),null);
   assert.equal((x.doc.querySelector('[data-action="discover"]') as HTMLButtonElement).disabled,false);
-  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/prepare.*automatically/i);
+  assert.equal(x.doc.querySelector('.workspace-notice'),null);
   x.click('[data-view="products"]');await x.until(()=>!!x.doc.querySelector('.product-research'));
   assert.equal(x.doc.querySelector('[data-product-approve]'),null);
   x.click('[data-product-edit]');
@@ -50,8 +50,8 @@ test('settings keep research budgets and sending consent in collapsed sections',
  const x=await boot();try{
   x.click('[data-view="settings"]');await x.until(()=>!!x.doc.querySelector('#settings-form'));
   const text=x.doc.querySelector('#settings-form')!.textContent!;
-  assert.match(text,/OpenAI monthly budget/);assert.equal(x.doc.querySelectorAll('#settings-form details[open]').length,0);
-  assert.match(text,/email service permits sending/);assert.doesNotMatch(text,/approval for each search|Unknowns is unrelated/);
+  assert.match(text,/OpenAI \/ month/);assert.equal(x.doc.querySelectorAll('#settings-form details[open]').length,0);
+  assert.match(text,/email service permits/);assert.doesNotMatch(text,/approval for each search|Unknowns is unrelated/);
   assert.equal((x.doc.querySelector('[name="providerPolicyConfirmed"]') as HTMLInputElement).checked,false);
   assert.equal(x.requests.some(r=>r.method==='POST'),false);
  }finally{x.close();}
@@ -74,9 +74,9 @@ test('a healthy active workspace has no false sending warning when no draft awai
 });
 
 test('actual billing and task warnings are separate bullets in one box without duplicate paused-task warnings',async()=>{
- const x=await boot({approved:true,paused:false,pipeline:{providerBlock:{code:'credit_balance_exhausted'},pausedJobs:4,attentionJobs:2}});try{
-  assert.equal(x.doc.querySelectorAll('#content .note.warning').length,1);assert.equal(x.doc.querySelectorAll('.workspace-notice li').length,2);
-  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/OpenAI credits required/);
-  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/2 tasks need review/);assert.doesNotMatch(x.doc.querySelector('.workspace-notice')!.textContent!,/4 tasks are paused/);
+ const x=await boot({approved:true,paused:false,pipeline:{providerBlock:{code:'credit_balance_exhausted'},pausedJobs:4,attentionJobs:2,issues:[{kind:'research',company:'Example company',error:'Public source unavailable',state:'failed',id:'job-1'}]}});try{
+  assert.equal(x.doc.querySelectorAll('#content .note.warning').length,1);assert.equal(x.doc.querySelectorAll('.workspace-notice li').length,2);assert.equal(x.doc.querySelector('.workspace-notice')!.hasAttribute('open'),false);
+  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/Add API credits/);
+  assert.match(x.doc.querySelector('.workspace-notice')!.textContent!,/Example company: Public source unavailable/);assert.doesNotMatch(x.doc.querySelector('.workspace-notice')!.textContent!,/4 tasks are paused/);
  }finally{x.close();}
 });

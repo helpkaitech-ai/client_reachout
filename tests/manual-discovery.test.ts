@@ -53,8 +53,8 @@ test('simultaneous manual requests cannot queue duplicate paid searches',async()
  const x=await setup();try{const requests=await Promise.all([x.manual(),x.manual()]);assert.ok(requests.every(r=>[200,409].includes(r.status)));assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,1);assert.equal((await all(x.scope,"SELECT * FROM jobs WHERE kind='discover_search'")).length,1);}finally{x.close();}
 });
 
-test('manual searches preserve the hard daily research limit and return its actual reason',async()=>{
- const x=await setup({dailyResearchLimit:1});try{await claimResearchBusiness(x.scope,'used',1);const r=await(await x.manual()).json() as any;assert.equal(r.state,'research_limit');assert.match(r.message,/candidate research attempts today/);assert.doesNotMatch(r.message,/campaign interval/);assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,0);}finally{x.close();}
+test('a new search is not blocked by legacy daily research usage',async()=>{
+ const x=await setup({dailyResearchLimit:1});try{await claimResearchBusiness(x.scope,'used',1);const r=await(await x.manual()).json() as any;assert.equal(r.state,'queued');assert.equal((await all(x.scope,'SELECT * FROM discovery_batches')).length,1);}finally{x.close();}
 });
 
 test('manual search ignores unrelated candidates while recurring discovery stays disabled',async()=>{

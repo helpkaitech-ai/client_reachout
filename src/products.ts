@@ -1,4 +1,5 @@
 import type {Env,Product,Settings,Job} from './types';
+import {searchTarget} from './discovery-cycles';
 import {defaults} from './types';
 import {all,one,run,settings,now,day,uid,enqueue,audit,BudgetPaused} from './db';
 import {productDatabase} from './product-store';
@@ -64,14 +65,15 @@ export async function saveProduct(env:Env,input:any,id?:string){
  await scoped.DB.batch(ops);await audit(env,'product_saved',key,'Product revision saved; the next search generates and applies its profile automatically');return p;
 }
 export async function productDetail(env:Env,id:string){const p=await product(env,id),scope=await scopeProduct(env,p),s=await settings(scope);return {product:{...p,customerTypes:s.customerTypes,customerDescription:s.customerDescription,customerComments:s.customerComments},settings:s,providerBlock:await providerBlock(scope),images:await all(scope,'SELECT * FROM product_assets ORDER BY id'),analysis:JSON.parse(p.analysis||'{}'),usage:await one(scope,'SELECT * FROM daily_usage WHERE day=?',now().slice(0,10)),budget:await one(scope,"SELECT COALESCE(SUM(CASE WHEN state='settled' THEN actual ELSE reserved END),0) committed FROM expenses WHERE provider='openai' AND month=?",now().slice(0,7)),searchDiagnostics:await searchDiagnostics(scope)};}
-export async function requestProductDiscovery(env:Env){
+export async function requestProductDiscovery(env:Env,target=12){
+ searchTarget(target);
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
  const root={...env,DB:env.GLOBAL_DB!},p=await product(root,env.PRODUCT_ID!);
  await assertProviderAvailable(env);
  if(p.state==='archived')throw new Error('This product is archived');
  if(!p.enabled)await run(root,'UPDATE products SET enabled=1 WHERE id=?',p.id);
  const scope=await scopeProduct(root,p);
- await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({revision:p.revision,day:day()}));
+ await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({revision:p.revision,target}));
  if(p.state==='target_review'){await approveProduct(root,p.id,p.revision);return continueProductDiscovery(root,await product(root,p.id));}
  if(p.state==='approved'&&p.approved_revision===p.revision)return continueProductDiscovery(root,p);
  await queueProductAnalysis(root,p.id);
@@ -81,12 +83,12 @@ export async function continueProductDiscovery(root:Env,p:Product){
  const scope=await scopeProduct(root,p),row=await one<{value:string}>(scope,"SELECT value FROM integration_state WHERE key='manual_search_request'");
  if(!row)return;
  const request=JSON.parse(row.value);
- if(request.revision!==p.revision||request.day!==day()){
+ if(request.revision!==p.revision){
   await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");return;
  }
  const {startDiscovery}=await import('./discovery');
- const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true);
- if(['queued','running','researching','daily_target'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");
+ const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true,false,request.target||12);
+ if(['queued','running','researching'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");
  return result;
 }
 async function searchDiagnostics(env:Env){

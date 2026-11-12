@@ -109,7 +109,7 @@ test('actual UI saves products ready for on-demand searches and retains independ
   const login=await worker.fetch(new Request(base+'/api/login',{method:'POST',headers:{Origin:base,'X-Requested-With':'Prepyr'},body:JSON.stringify({password:env.ADMIN_PASSWORD})}),env,ctx),cookie=login.headers.get('set-cookie')!.split(';')[0];
   (dom.window as any).fetch=(path:string,init:any)=>worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);
   dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));
-  assert.equal(doc.querySelector('#outreach-state'),null);assert.equal(doc.querySelector('[data-open]'),null);assert.match(doc.querySelector('#content')!.textContent!,/1 tasks reached a limit/);
+  assert.equal(doc.querySelector('#outreach-state'),null);assert.equal(doc.querySelector('[data-open]'),null);assert.equal(doc.querySelector('.workspace-notice'),null);
   await click('[data-view="products"]');await until(()=>!!doc.querySelector('[data-product-new]'));
   await click('[data-product-new]');await until(()=>!!doc.querySelector('#product-form'));
   for(const [key,value]of Object.entries({...input,name:'Saved through UI'}))(doc.querySelector('#product-form [name="'+key+'"]') as HTMLInputElement).value=value;

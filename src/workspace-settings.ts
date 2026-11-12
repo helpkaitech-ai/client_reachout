@@ -4,7 +4,6 @@ import {cleanEmail} from './policy';
 
 const targetingKeys=['offerContext','freeOffer','portfolio','locationIds','customerTypes','customerDescription','customerComments'] as const;
 export async function prepareWorkspaceSettings(env:Env,previous:Settings,next:Settings,senderInput?:unknown){
- if(env.PRODUCT_ID&&(next.dailyLeadLimit>20||next.dailyResearchLimit>100||next.dailyTotalLimit>12||next.dailyNewLimit>12))throw new Error('Each product allows up to 100 research attempts, 20 qualified prospects and 12 sends per day');
  let profileChanged=false;
  if(env.PRODUCT_ID){
   const root={...env,DB:env.GLOBAL_DB!},p=await one<Product>(root,'SELECT * FROM products WHERE id=?',env.PRODUCT_ID);

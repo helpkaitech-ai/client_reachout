@@ -15,7 +15,6 @@ export async function settings(env:Env):Promise<Settings> {
  const stored=row?JSON.parse(row.data):{};
  const active=Object.fromEntries(Object.keys(defaults).filter(k=>k in stored).map(k=>[k,stored[k]]));
  const result={...defaults,...active,openaiBudget:Math.min(50,Number(active.openaiBudget)||50),discoveryResults:Math.min(10,Number(active.discoveryResults)||10)};
- if(env.PRODUCT_ID){result.dailyLeadLimit=Math.min(20,result.dailyLeadLimit);result.dailyResearchLimit=Math.min(100,result.dailyResearchLimit);result.dailyTotalLimit=Math.min(12,result.dailyTotalLimit);result.dailyNewLimit=Math.min(12,result.dailyNewLimit);}
  return result;
 }
 export async function audit(env:Env,type:string,entity:string|null,detail:string) {
