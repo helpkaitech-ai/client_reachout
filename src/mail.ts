@@ -1,6 +1,6 @@
 import type { Draft, Env, Lead, Settings } from './types';
 import { acquire, release, all, audit, claimDaily, day, enqueue, now, one, run, uid } from './db';
-import { approvalHash, approvalProblems, classifyInbound, cleanEmail, withinWindow } from './policy';
+import { approvalHash, approvalProblems, classifyInbound, cleanEmail, withinWindow, publicUrl } from './policy';
 import { gmail, googleAccessToken, mimeMessage, sendGmail, telegram, ProviderError } from './providers';
 import {requireProductReady,assertProductCurrent} from './products';
 import {notifyInApp} from './notifications';
@@ -16,8 +16,27 @@ export async function unsubscribeUrl(env:Env,leadId:string) {
 const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 function messageText(d:Draft,s:Settings){return `${d.body.trim()}${d.artifact.trim()?'\n\nFree sample\n'+d.artifact.trim():''}\n\n${s.senderName}`;}
 export function composedBody(d:Draft,s:Settings,_url:string){return messageText(d,s)+'\n\nTo unsubscribe, reply “unsubscribe”.';}
-export function composedHtml(d:Draft,s:Settings,url:string){
- return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#222">${escapeHtml(messageText(d,s)).replace(/\n/g,'<br>')}<p style="font-size:12px"><a href="${escapeHtml(url)}" style="color:#666">Unsubscribe</a></p></div>`;
+export type ProductLink={name:string;website:string};
+export function productLink(env:Pick<Env,'PRODUCT_BRIEF'>):ProductLink|undefined{
+ try{const p=JSON.parse(env.PRODUCT_BRIEF||'{}');return typeof p.name==='string'&&p.name.trim()&&publicUrl(p.website)?{name:p.name.trim(),website:publicUrl(p.website)!}:undefined;}catch{return undefined;}
+}
+export function linkedProductText(text:string,product?:ProductLink){
+ const website=publicUrl(product?.website),name=product?.name.trim();
+ if(!website||!name||name.length>200)return escapeHtml(text).replace(/\n/g,'<br>');
+ const escaped=name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+ const pattern=new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`,'giu');
+ // Keep existing URLs and email addresses intact; only link mentions in prose.
+ const protectedToken=/(https?:\/\/[^\s<>]+|www\.[^\s<>]+|[\w.+-]+@[\w.-]+\.[a-z]{2,})/gi;
+ return text.split(protectedToken).map((part,index)=>{
+  if(index%2)return escapeHtml(part);
+  let html='',cursor=0;
+  for(const match of part.matchAll(pattern)){html+=escapeHtml(part.slice(cursor,match.index))+`<a href="${escapeHtml(website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(match[0])}</a>`;cursor=match.index!+match[0].length;}
+  return html+escapeHtml(part.slice(cursor));
+ }).join('').replace(/\n/g,'<br>');
+}
+export function composedHtml(d:Draft,s:Settings,url:string,product?:ProductLink){
+ const content=d.body.trim()+(d.artifact.trim()?'\n\nFree sample\n'+d.artifact.trim():'');
+ return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#222">${linkedProductText(content,product)}<br><br>${escapeHtml(s.senderName)}<p style="font-size:12px"><a href="${escapeHtml(url)}" style="color:#666">Unsubscribe</a></p></div>`;
 }
 export async function suppress(env:Env,lead:Lead,reason:string) {
  if(lead.email) await run({...env,DB:env.GLOBAL_DB||env.DB},'INSERT OR IGNORE INTO suppressions(email,reason,created_at) VALUES(?,?,?)',lead.email,reason,now());
@@ -59,7 +78,7 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  await claimDaily(env,'send_slots',Number.MAX_SAFE_INTEGER);
  if(draft.kind==='initial')await claimDaily(env,'new_slots',Number.MAX_SAFE_INTEGER);
  const messageId=`<${draft.id}@${env.SENDER_EMAIL.split('@')[1]}>`;
- const raw=mimeMessage({from:env.SENDER_EMAIL,name:s.senderName,to:lead.email!,subject:draft.subject,body:composedBody(draft,s,await unsubscribeUrl(env,lead.id)),html:composedHtml(draft,s,await unsubscribeUrl(env,lead.id)),messageId,replyToId:draft.in_reply_to,unsubscribe:await unsubscribeUrl(env,lead.id)});
+ const raw=mimeMessage({from:env.SENDER_EMAIL,name:s.senderName,to:lead.email!,subject:draft.subject,body:composedBody(draft,s,await unsubscribeUrl(env,lead.id)),html:composedHtml(draft,s,await unsubscribeUrl(env,lead.id),productLink(env)),messageId,replyToId:draft.in_reply_to,unsubscribe:await unsubscribeUrl(env,lead.id)});
  const claimed=await run(env,`UPDATE drafts SET status='sending',message_id=?,updated_at=? WHERE id=? AND status='approved' AND version=?
  AND NOT EXISTS(SELECT 1 FROM suppressions WHERE email=?) AND EXISTS(SELECT 1 FROM leads WHERE id=? AND status NOT IN ('suppressed','closed','bounced'))`,messageId,now(),draft.id,draft.version,lead.email,lead.id);
  if(!claimed.meta.changes)return;

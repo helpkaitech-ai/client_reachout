@@ -1,5 +1,5 @@
 import type { Campaign, Settings } from './types';
-type Place={id:string;label:string;country:string;countryName:string;region:string;timezone:string};
+type Place={id:string;label:string;country:string;countryName:string;region:string;timezone:string;scope?:'country'|'city'|'region'};
 const rows=[
  ['london','London, UK','GB','United Kingdom','Europe','Europe/London'],
  ['bengaluru','Bengaluru, India','IN','India','Asia','Asia/Kolkata'],
@@ -37,10 +37,21 @@ const rows=[
  ['johannesburg','Johannesburg, South Africa','ZA','South Africa','Africa','Africa/Johannesburg'],
 ];
 export const places:Place[]=rows.map(([id,label,country,countryName,region,timezone])=>({id:'city:'+id,label,country,countryName,region,timezone}));
+// Country-only searches must not silently resolve to a sample city.
+const countries:Place[]=[...new Map(places.map(p=>[p.country,{...p,id:'country:'+p.country,label:p.countryName,scope:'country' as const}])).values()];
+const areaRows=[
+ ['US-CA','California','US','America/Los_Angeles'],['US-TX','Texas','US','America/Chicago'],['US-CO','Colorado','US','America/Denver'],['US-NY','New York State','US','America/New_York'],['US-IL','Illinois','US','America/Chicago'],
+ ['IN-KA','Karnataka','IN','Asia/Kolkata'],['IN-MH','Maharashtra','IN','Asia/Kolkata'],['IN-DL','Delhi NCR','IN','Asia/Kolkata'],['IN-TS','Telangana','IN','Asia/Kolkata'],
+ ['GB-ENG','England','GB','Europe/London'],['GB-SCT','Scotland','GB','Europe/London'],['GB-WLS','Wales','GB','Europe/London'],['GB-NIR','Northern Ireland','GB','Europe/London'],
+ ['CA-ON','Ontario','CA','America/Toronto'],['CA-BC','British Columbia','CA','America/Vancouver'],
+ ['AU-NSW','New South Wales','AU','Australia/Sydney'],['AU-VIC','Victoria','AU','Australia/Melbourne'],['AU-QLD','Queensland','AU','Australia/Brisbane'],['AU-WA','Western Australia','AU','Australia/Perth'],
+];
+const areas:Place[]=areaRows.map(([id,label,country,timezone])=>({...countries.find(p=>p.country===country)!,id:'area:'+id,label,timezone,scope:'region'}));
 export const locationOptions=[{id:'worldwide',label:'Worldwide — varied locations',group:'Worldwide'},
  ...[...new Set(places.map(p=>p.region))].map(region=>({id:'region:'+region,label:region,group:'Regions'})),
- ...[...new Map(places.map(p=>[p.country,p.countryName])).entries()].map(([code,name])=>({id:'country:'+code,label:name,group:'Countries'})),
- ...places.map(p=>({id:p.id,label:p.label,group:'Cities'}))];
+ ...[...new Map(places.map(p=>[p.country,p.countryName])).entries()].map(([code,name])=>({id:'country:'+code,label:name,group:'Countries',country:code})),
+ ...places.map(p=>({id:p.id,label:p.label,group:'Cities',country:p.country})),
+ ...areas.map(p=>({id:p.id,label:p.label,group:'States / regions',country:p.country}))];
 export function validateLocations(value:unknown):string[]{
  if(!Array.isArray(value)||!value.length||value.length>50||value.some(id=>typeof id!=='string'||!locationOptions.some(o=>o.id===id)))throw new Error('Select at least one location from the dropdown.');
  const ids=[...new Set(value as string[])];return ids.includes('worldwide')?['worldwide']:ids;
@@ -48,15 +59,23 @@ export function validateLocations(value:unknown):string[]{
 export function expandLocations(ids:string[]):Place[]{
  return places.filter(p=>ids.some(id=>id==='worldwide'||id===p.id||id==='country:'+p.country||id==='region:'+p.region));
 }
+export function searchLocations(ids:string[]):Place[]{
+ const scopes=ids.flatMap(id=>countries.find(p=>p.id===id)||areas.find(p=>p.id===id)||expandLocations([id]));
+ // A whole-country selection already includes any cities selected in that country.
+ return [...new Map(scopes.filter(p=>p.scope==='country'||!scopes.some(c=>c.scope==='country'&&c.country===p.country)).map(p=>[p.id,p])).values()];
+}
+export function searchUserLocation(campaign:Campaign){
+ return {country:campaign.country,...(campaign.scope==='country'?{}:campaign.scope==='region'?{region:campaign.location}:{city:campaign.location.split(',')[0]})};
+}
 export type SearchHistory={location:string;country:string;uses:number;last_used:string};
 const industries=['commercial maintenance companies','industrial equipment suppliers','corporate training providers','event venues','packaging manufacturers','equipment rental','commercial cleaning companies','wholesale suppliers','auto repair shops','logistics companies','furniture manufacturers','printing companies'];
 export function nextCampaign(s:Settings,history:SearchHistory[],scope?:string[]):Campaign{
- const choices=expandLocations(validateLocations(scope||s.locationIds||['worldwide']));
+ const choices=searchLocations(validateLocations(scope||s.locationIds||['worldwide']));
  const countryUses=(p:Place)=>history.filter(h=>h.country===p.country).reduce((n,h)=>n+Number(h.uses),0);
  const usage=(p:Place)=>history.find(h=>h.location===p.label);
  choices.sort((a,b)=>countryUses(a)-countryUses(b)||Number(usage(a)?.uses||0)-Number(usage(b)?.uses||0)||(usage(a)?.last_used||'').localeCompare(usage(b)?.last_used||''));
  const p=choices[0],count=history.reduce((n,h)=>n+Number(h.uses),0);
- return {query:industries[count%industries.length],location:p.label,country:p.country,timezone:p.timezone,enabled:true};
+ return {query:industries[count%industries.length],location:p.label,country:p.country,timezone:p.timezone,scope:p.scope||'city',enabled:true};
 }
 export function manualSearchPlan(s:Settings,history:SearchHistory[]):Campaign[]{
  const chosen:Campaign[]=[];const simulated=[...history];
@@ -67,12 +86,12 @@ export function nextProductCampaign(s:Settings,history:SearchHistory[]):Campaign
  const choices=s.campaigns.filter(c=>c.enabled);if(!choices.length)throw new Error('Generate a customer profile with enabled search scopes first');
  const count=history.reduce((n,h)=>n+Number(h.uses),0),query=choices[count%choices.length].query;
  const ids=validateLocations(s.locationIds||['worldwide']);
- const places=expandLocations(ids).sort((a,b)=>{
+ const places=searchLocations(ids).sort((a,b)=>{
   const usage=(p:Place)=>history.filter(h=>h.location===p.label).reduce((n,h)=>n+Number(h.uses),0);
   const countryUsage=(p:Place)=>history.filter(h=>h.country===p.country).reduce((n,h)=>n+Number(h.uses),0);
   return countryUsage(a)-countryUsage(b)||usage(a)-usage(b);
  });
  const p=places[0];if(!p)throw new Error('Select a valid product search location');
  // The query is always OpenAI-derived; owner locations only constrain geography.
- return {query,location:p.label,country:p.country,timezone:p.timezone,enabled:true};
+ return {query,location:p.label,country:p.country,timezone:p.timezone,scope:p.scope||'city',enabled:true};
 }

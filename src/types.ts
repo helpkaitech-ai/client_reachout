@@ -13,7 +13,7 @@ export interface Env {
  SAVED_WORKSPACE?:boolean;
 }
 export interface Product {id:string;name:string;website:string;description:string;remarks:string;sender_email:string;revision:number;state:string;analysis:string;approved_revision:number|null;error:string|null;enabled:number;created_at:string;updated_at:string;prospecting_paused?:boolean;}
-export interface Campaign { query: string; location: string; country: string; timezone: string; enabled: boolean }
+export interface Campaign { scope?: 'country'|'city'|'region'; query: string; location: string; country: string; timezone: string; enabled: boolean }
 export interface Settings {
  locationIds?: string[];
  dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number; dailyLeadLimit:number;

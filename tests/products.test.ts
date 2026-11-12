@@ -1,3 +1,4 @@
+import {emailStyleInstructions} from '../src/email-style';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index';
@@ -39,9 +40,12 @@ test('approved product discovers matching prospects and drafts its actual produc
  const {env,close}=database();Object.assign(env,{OPENAI_API_KEY:'fixture',ENABLE_AUTOMATION:'true'});const original=globalThis.fetch,{fetcher,calls}=mockOpenAI();globalThis.fetch=fetcher;
  try{
   const p=await approved(env),scope=await scopeProduct(env,p);
+  await run(scope,"UPDATE settings SET data=json_set(data,'$.locationIds',json('[\"country:GB\"]'))");
   await startDiscovery(scope,await settings(scope));for(let step=0;step<13;step++)await tick(scope);
   const lead=await one<any>(scope,'SELECT * FROM leads'),draft=await one<any>(scope,'SELECT * FROM drafts');
   assert.ok(lead);assert.equal(lead.contact_status,'publicly_sourced');assert.equal(draft.quality_hold,'');assert.equal(draft.status,'pending');assert.equal(draft.approved_hash,null);assert.match(draft.body,/flange|pressure/i);
+  const writing=calls.find(c=>c.text?.format?.schema?.properties?.remarksApplied&&c.text?.format?.schema?.properties?.body);assert.ok(writing?.instructions.includes(emailStyleInstructions));
+  const discovery=calls.find(c=>c.instructions.includes('This is the BUSINESS DISCOVERY pass'));assert.deepEqual(discovery?.tools?.[0]?.user_location,{type:'approximate',country:'GB'});
   assert.equal(JSON.parse(draft.free_offer).type,'product');assert.doesNotMatch(draft.body,/free|30.day|Adobe/i);
   assert.ok(calls.every(c=>c.instructions.includes(input.remarks)));assert.equal((await all(scope,'SELECT * FROM messages')).length,0);assert.equal((await all(env,'SELECT * FROM leads')).length,0);
  }finally{globalThis.fetch=original;close();}
@@ -157,4 +161,18 @@ test('product research stays on its domain and repairs one paraphrased capabilit
  const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch,ai=mockOpenAI();
  globalThis.fetch=async(url,init)=>{const response=await ai.fetcher(url,init);if(String(url)!=='https://api.openai.com/v1/responses')return response;const request=JSON.parse(String(init?.body));if(request.text?.format.name!=='relay_product_extract')return response;const data:any=await response.json(),content=data.output.at(-1).content[0],profile=JSON.parse(content.text);profile.useCases[0].capabilityEvidence.excerpt='A paraphrase that does not occur in the product evidence';content.text=JSON.stringify(profile);return Response.json(data);};
  try{const p=await approved(env);assert.equal(p.state,'approved');assert.equal(ai.calls.filter(c=>c.tools).length,1);assert.deepEqual(ai.calls[0].tools[0].filters.allowed_domains,['pumps.example.com']);assert.match(ai.calls[0].instructions,/CURRENT TASK BOUNDARY/);assert.equal(ai.calls.filter(c=>c.text?.format.name==='relay_product_profile_evidence_repair').length,1);}finally{globalThis.fetch=original;close();}
+});
+
+
+test('product email preview and Gmail MIME use the same saved product link',async()=>{
+ const {env,close}=database();Object.assign(env,{OPENAI_API_KEY:'fixture',ENABLE_SENDING:'true',GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',GOOGLE_REFRESH_TOKEN:'fixture'});const original=globalThis.fetch;globalThis.fetch=mockOpenAI().fetcher;
+ try{
+  const p=await approved(env),scope=await scopeProduct(env,p);await run(scope,'UPDATE settings SET data=?',JSON.stringify(testSettings));
+  const lead=await readyLead(scope),draft=await readyDraft(scope,lead);draft.body='Your catalogue lists DIN flanges and your quotes need pressure ratings. FlangeFlow could help collect both.';
+  const {approvalHash}=await import('../src/policy');await run(scope,`UPDATE drafts SET body=?,artifact='',approved_hash=? WHERE id=?`,draft.body,await approvalHash({...draft,artifact:''},lead,testSettings,scope.SENDER_EMAIL!),draft.id);
+  const cookie=await login(env),response=await req(env,`/api/drafts/${draft.id}/preview?product=${p.id}`,undefined,cookie);assert.equal(response.status,200);const preview=await response.json() as any;
+  assert.match(preview.html,/<a href="https:\/\/pumps.example.com\/"[^>]*>FlangeFlow<\/a>/);
+  let sent='';globalThis.fetch=mockGoogle(body=>{sent=Buffer.from(body.raw,'base64url').toString();return Response.json({id:'fixture-sent',threadId:'fixture-thread'});});
+  await sendApproved(scope,testSettings,draft.id);assert.ok(sent.replace(/\r\n/g,'').includes(Buffer.from(preview.html).toString('base64')));
+ }finally{globalThis.fetch=original;close();}
 });

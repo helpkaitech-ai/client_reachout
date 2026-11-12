@@ -6,7 +6,7 @@ import {assertProviderAvailable,blockProvider} from './provider-control';
 
 export class StageYield extends Error {}
 export interface Workflow {jobId:string;paidCalls:number;retryVersion?:number;priority?:boolean;maxCost?:number}
-export interface AiOptions {search?:boolean;searchContext?:'low'|'medium'|'high';schema?:object;workflow?:Workflow;stage?:string;maxOutput?:number;maxTools?:number;domains?:string[];location?:{country:string;city?:string};images?:string[];}
+export interface AiOptions {search?:boolean;searchContext?:'low'|'medium'|'high';schema?:object;workflow?:Workflow;stage?:string;maxOutput?:number;maxTools?:number;domains?:string[];location?:{country:string;city?:string;region?:string};images?:string[];}
 export function searchUsage(data:any) {
  const reported=data.tool_usage?.web_search?.num_requests;
  if(Number.isInteger(reported)&&reported>=0)return {count:reported,estimated:false};

@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {defaults} from '../src/types';
-import {places,nextCampaign,nextProductCampaign,manualSearchPlan,validateLocations,expandLocations,type SearchHistory} from '../src/locations';
+import {places,nextCampaign,nextProductCampaign,manualSearchPlan,validateLocations,expandLocations,searchUserLocation,type SearchHistory} from '../src/locations';
 import {database,testSettings} from './helpers';
 import {run,one,all,now,enqueue,reserve} from '../src/db';
 import {processDiscovery,tick} from '../src/engine';
@@ -17,4 +17,15 @@ test('worldwide product searches diversify countries even when every saved profi
  for(let i=0;i<20;i++){const c=nextProductCampaign(s,history);countries.add(c.country);assert.ok(s.campaigns.some(p=>p.query===c.query));history.push({location:c.location,country:c.country,uses:1,last_used:now()});}
  assert.equal(countries.size,20);
  const singapore=nextProductCampaign({...s,locationIds:['country:SG']},history);assert.equal(singapore.country,'SG');
+});
+
+
+test('country searches use the entire country for web and LinkedIn; cities and regions stay scoped',async()=>{
+ const {actorInput}=await import('../src/apify');const plan={searchQuery:'operations',currentJobTitles:['Operations Manager']};
+ for(const next of [nextCampaign,nextProductCampaign]){
+  const s={...defaults,campaigns:[{query:'data analysis',location:'New York, USA',country:'US',timezone:'America/New_York',enabled:true}]};
+  const national=next({...s,locationIds:['country:US']},[]);assert.equal(national.location,'United States');assert.equal(national.scope,'country');assert.deepEqual(searchUserLocation(national),{country:'US'});assert.deepEqual(actorInput(plan,national,0).locations,['United States']);
+  const city=next({...s,locationIds:['city:austin']},[]);assert.deepEqual(searchUserLocation(city),{country:'US',city:'Austin'});assert.deepEqual(actorInput(plan,city,0).locations,['Austin, United States']);
+  const area=next({...s,locationIds:['area:US-CA']},[]);assert.deepEqual(searchUserLocation(area),{country:'US',region:'California'});assert.deepEqual(actorInput(plan,area,0).locations,['California, United States']);
+ }
 });

@@ -7,7 +7,7 @@ import {locationOptions} from '../src/locations';
 const html=fs.readFileSync('public/index.html','utf8'),code=fs.readFileSync('public/app.js','utf8');
 const flush=()=>new Promise(r=>setTimeout(r,40));
 async function boot(options:{blocked?:boolean;anonymous?:boolean;failSend?:boolean;databaseLimit?:boolean;loginFirst?:boolean;discoveryPausedUntil?:string;outreachPaused?:boolean;discoveryPaused?:boolean}={}){
- const lead={id:'l1',company:'Pump Specialists',email:'team@pumps.example',city:'Leeds',country:'GB',status:'review',verification:'valid',eligibility:'pending',verification_note:'Previously checked address',eligibility_note:'',timezone:'Europe/London',contact_name:'',last_sent_at:null,next_followup_at:null,followup_count:0};
+ const lead={id:'l1',company:'Pump Specialists',email:'team@pumps.example',city:'Leeds',country:'GB',status:'review',verification:'valid',eligibility:'pending',verification_note:'Previously checked address',eligibility_note:'',timezone:'Europe/London',contact_name:'Jane',contact_evidence:JSON.stringify({profileUrl:'https://www.linkedin.com/in/jane-fixture/'}),last_sent_at:null,next_followup_at:null,followup_count:0};
  const draft={id:'d1',lead_id:'l1',company:lead.company,subject:'A pump enquiry example',body:'Your catalogue lists pressure ratings. I can make a pressure-rating quote checklist for free.',artifact:'',evidence:'[]',warnings:'[]',rationale:'Collect pump pressure details',version:1,status:'pending',kind:'initial',sendIssues:[]};
  const data={locationOptions,settings:{...defaults,outreachPaused:!!options.outreachPaused,discoveryPaused:!!options.discoveryPaused,discoveryPausedUntil:options.discoveryPausedUntil||'',businessAddress:options.blocked?'':'A test business address'},connections:{sendingEnabled:!options.blocked,automationEnabled:true},budgets:[],drafts:[draft],leads:[lead],messages:[],jobs:[],events:[],runs:[],notifications:[],expenses:[]};
  const requests:any[]=[],dom=new JSDOM(html,{url:'https://outreach.example.com',runScripts:'outside-only'}),doc=dom.window.document;
@@ -41,7 +41,25 @@ test('sender blocker disables Send and never calls sending API',async()=>{const 
 test('sending error preserves editor and does not falsely mark sent',async()=>{const {dom,doc,requests,click}=await boot({failSend:true});try{await click('[data-open]');await click('[data-send]');assert.equal((doc.querySelector('#modal') as HTMLDialogElement).open,true);assert.match(doc.querySelector('#toast')!.textContent!,/Draft changed/);assert.equal(requests.filter(r=>r.path.endsWith('/approve')).length,1);}finally{dom.window.close();}});
 test('unauthenticated request reveals no prospect table',async()=>{const {dom,doc}=await boot({anonymous:true});try{assert.equal(doc.querySelector('#login')?.hasAttribute('hidden'),false);assert.equal(doc.querySelector('#app')?.hasAttribute('hidden'),true);}finally{dom.window.close();}});
 
-test('one dropdown accepts multiple locations and saves them before searching without country or timezone fields',async()=>{const {dom,doc,requests,click}=await boot();try{assert.equal(doc.querySelectorAll('.location-picker').length,1);await click('[name="locationIds"][value="country:IN"]');await click('[name="locationIds"][value="city:london"]');assert.equal((doc.querySelector('[value="worldwide"]') as HTMLInputElement).checked,false);await click('[data-action="discover"]');const save=requests.find(r=>r.path==='/api/settings/locations');assert.deepEqual(new Set(save.body.locationIds),new Set(['country:IN','city:london']));assert.ok(requests.indexOf(save)<requests.findIndex(r=>r.path==='/api/discover'));await click('[data-view="settings"]');assert.equal(doc.querySelector('[data-c="timezone"]'),null);assert.equal(doc.querySelector('[data-c="country"]'),null);assert.equal(doc.querySelectorAll('[name="locationIds"]:checked').length,2);}finally{dom.window.close();}});
+test('country-first dropdowns save country-wide or city scopes, clear stale cities, and close on outside interaction',async()=>{
+ const {dom,doc,requests,click}=await boot();
+ const change=(id:string,value:string)=>{const field=doc.querySelector(id) as unknown as HTMLSelectElement;field.value=value;field.dispatchEvent(new dom.window.Event('change',{bubbles:true}));};
+ try{
+  assert.equal((doc.querySelector('#place-filter') as unknown as HTMLSelectElement).disabled,true);
+  change('#country-filter','country:IN');assert.equal((doc.querySelector('#place-filter') as unknown as HTMLSelectElement).disabled,false);
+  assert.ok(doc.querySelector('#place-filter option[value="city:mumbai"]'));assert.equal(doc.querySelector('#place-filter option[value="city:london"]'),null);
+  await click('[data-action="discover"]');assert.deepEqual(requests.find(r=>r.path==='/api/settings/locations').body.locationIds,['country:IN']);
+  change('#place-filter','city:mumbai');await click('[data-action="discover"]');assert.deepEqual(requests.filter(r=>r.path==='/api/settings/locations').at(-1).body.locationIds,['city:mumbai']);
+  await click('[data-view="settings"]');assert.equal((doc.querySelector('#country-filter') as unknown as HTMLSelectElement).value,'country:IN');assert.equal((doc.querySelector('#place-filter') as unknown as HTMLSelectElement).value,'city:mumbai');
+  change('#country-filter','country:US');assert.equal((doc.querySelector('#place-filter') as unknown as HTMLSelectElement).value,'');assert.equal(doc.querySelector('#place-filter option[value="city:mumbai"]'),null);
+  const country=doc.querySelector('#country-filter') as unknown as HTMLSelectElement;country.focus();doc.body.dispatchEvent(new dom.window.Event('pointerdown',{bubbles:true}));assert.notEqual(doc.activeElement,country);
+  change('#country-filter','');assert.equal((doc.querySelector('#place-filter') as unknown as HTMLSelectElement).disabled,true);
+ }finally{dom.window.close();}
+});
+
+test('profile column follows the prospect and links the sourced LinkedIn page',async()=>{
+ const {dom,doc}=await boot();try{assert.deepEqual([...doc.querySelectorAll('th')].slice(0,3).map(x=>x.textContent),['Prospect','Profile','Email']);const link=doc.querySelector('.profile-cell a')!;assert.equal(link.getAttribute('href'),'https://www.linkedin.com/in/jane-fixture/');assert.match(link.textContent!,/LinkedIn/);assert.equal(link.getAttribute('rel'),'noopener noreferrer');}finally{dom.window.close();}
+});
 
 for(const loginFirst of [false,true])test(`D1 limit keeps workspace open after ${loginFirst?'password login':'session reload'} and allows sign out`,async()=>{
  const {dom,doc,requests,click}=await boot({databaseLimit:true,loginFirst});
@@ -59,7 +77,7 @@ for(const loginFirst of [false,true])test(`D1 limit keeps workspace open after $
 test('dark mode stays synchronized between header and Settings and persists on reload',async()=>{
  const {dom,doc,click}=await boot();try{
   assert.equal(doc.documentElement.dataset.theme,'light');await click('#theme-toggle');assert.equal(doc.documentElement.dataset.theme,'dark');assert.equal(dom.window.localStorage.getItem('relay-theme'),'dark');
-  await click('[data-view="settings"]');const select=doc.querySelector('#theme-preference') as unknown as HTMLSelectElement;assert.equal(select.value,'dark');select.value='light';select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));assert.equal(doc.documentElement.dataset.theme,'light');assert.equal(doc.querySelector('#theme-toggle')!.getAttribute('aria-pressed'),'false');
+  await click('[data-view="settings"]');const select=doc.querySelector('#theme-preference') as unknown as unknown as HTMLSelectElement;assert.equal(select.value,'dark');select.value='light';select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));assert.equal(doc.documentElement.dataset.theme,'light');assert.equal(doc.querySelector('#theme-toggle')!.getAttribute('aria-pressed'),'false');
   dom.window.localStorage.setItem('relay-theme','dark');dom.window.eval(fs.readFileSync('public/theme.js','utf8'));assert.equal(doc.documentElement.dataset.theme,'dark');assert.equal(select.value,'dark');
  }finally{dom.window.close();}
 });

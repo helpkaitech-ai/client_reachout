@@ -24,7 +24,7 @@ export async function apifyRequest(env:Env,path:string,init:RequestInit={}){
 export function actorInput(plan:{searchQuery:string;currentJobTitles:string[]},campaign:Campaign,index:number,customerTypes:string[]=[],currentCompanies:string[]=[]){
  const country=new Intl.DisplayNames(['en'],{type:'region'}).of(campaign.country)||campaign.country;
  const city=campaign.location.split(',')[0].trim();
- return {profileScraperMode:'Full',...(currentCompanies.length?{currentCompanies:currentCompanies.slice(0,12)}:{}),searchQuery:currentCompanies.length?'':customerTypes.includes('startups')?'startup':String(plan.searchQuery||'').trim().split(/\s+/).slice(0,2).join(' ').slice(0,100),currentJobTitles:plan.currentJobTitles.slice(0,4).map(x=>x.slice(0,100)),locations:[city===country?country:`${city}, ${country}`],maxItems:25,startPage:1,takePages:1,autoQuerySegmentation:false};
+ return {profileScraperMode:'Full',...(currentCompanies.length?{currentCompanies:currentCompanies.slice(0,12)}:{}),searchQuery:currentCompanies.length?'':customerTypes.includes('startups')?'startup':String(plan.searchQuery||'').trim().split(/\s+/).slice(0,2).join(' ').slice(0,100),currentJobTitles:plan.currentJobTitles.slice(0,4).map(x=>x.slice(0,100)),locations:[campaign.scope==='country'||city===country?country:`${city}, ${country}`],maxItems:25,startPage:1,takePages:1,autoQuerySegmentation:false};
 }
 // Retain only public professional context, not education, photos or personal data.
 // Full mode does not perform third-party email enrichment. Published addresses
