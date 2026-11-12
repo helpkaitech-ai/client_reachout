@@ -2,7 +2,7 @@ import type {Env,Settings,Product} from './types';
 import {run,one,now} from './db';
 import {cleanEmail} from './policy';
 
-const targetingKeys=['offerContext','portfolio','locationIds','customerTypes','customerDescription','customerComments'] as const;
+const targetingKeys=['offerContext','freeOffer','portfolio','locationIds','customerTypes','customerDescription','customerComments'] as const;
 export async function prepareWorkspaceSettings(env:Env,previous:Settings,next:Settings,senderInput?:unknown){
  if(env.PRODUCT_ID&&(next.dailyLeadLimit>20||next.dailyResearchLimit>100||next.dailyTotalLimit>12||next.dailyNewLimit>12))throw new Error('Each product allows up to 100 research attempts, 20 qualified prospects and 12 sends per day');
  let profileChanged=false;

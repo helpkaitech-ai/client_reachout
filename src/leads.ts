@@ -1,6 +1,7 @@
 import type {Env,Campaign} from './types';
 import {now,one,run,uid} from './db';
 import {cleanEmail,publicUrl,validTimezone} from './policy';
+import {verifiedWorkContact} from './work-email-policy';
 import {domainOf} from './evidence';
 export function entityKey(company:string,website:string,city:string){return [domainOf(website),company.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu,''),city.normalize('NFKC').toLowerCase().trim()].join('|');}
 export async function importLead(env:Env,input:any,campaign?:Campaign,discovery?:{id:string;contact:any}){
@@ -13,6 +14,6 @@ export async function importLead(env:Env,input:any,campaign?:Campaign,discovery?
  if(existing)return discovery&&existing.id===discovery.id?existing.id:null;
  // Imported rows are private candidates. Only complete qualified drafts count
  // toward the prospect target; actual research remains independently capped.
- const id=discovery?.id||uid(),at=now();const r=await run(env,`INSERT OR IGNORE INTO leads(id,company,website,domain,email,phone,country,city,industry,timezone,source_url,contact_name,created_at,updated_at,contact_status,contact_evidence,verification_note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,id,company,website,domain,email,String(input.phone||'').slice(0,80),String(campaign?.country||input.country||input.countryCode||'').slice(0,80),city,String(input.industry||input.categoryName||campaign?.query||'').slice(0,200),zone,publicUrl(input.source_url||input.url)||website,String(input.contact_name||'').slice(0,120),at,at,discovery?'publicly_sourced':'legacy',JSON.stringify(discovery?.contact||{}),discovery?`Public email source: ${discovery.contact.sourceUrl}; delivery unknown`:'');
+ const id=discovery?.id||uid(),at=now();const r=await run(env,`INSERT OR IGNORE INTO leads(id,company,website,domain,email,phone,country,city,industry,timezone,source_url,contact_name,created_at,updated_at,contact_status,contact_evidence,verification_note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,id,company,website,domain,email,String(input.phone||'').slice(0,80),String(campaign?.country||input.country||input.countryCode||'').slice(0,80),city,String(input.industry||input.categoryName||campaign?.query||'').slice(0,200),zone,publicUrl(input.source_url||input.url)||website,String(input.contact_name||'').slice(0,120),at,at,discovery?(verifiedWorkContact(discovery.contact,email,website)?'provider_verified':'publicly_sourced'):'legacy',JSON.stringify(discovery?.contact||{}),discovery?(verifiedWorkContact(discovery.contact,email,website)?`Provider-verified professional work email; checked ${discovery.contact.observedAt}. Future delivery is not guaranteed.`:`Public email source: ${discovery.contact.sourceUrl}; delivery unknown`):'');
  return r.meta.changes?id:null;
 }

@@ -190,3 +190,58 @@ test('older held drafts remain accessible for reassessment without appearing as 
   assert.equal(response.status,200);const data:any=await response.json();assert.equal(data.reviewDrafts.length,1);assert.equal(data.reviewDrafts[0].id,draft.id);assert.equal(data.metrics.prospects,0);
  }finally{x.close();}
 });
+
+
+test('authorized product free offer is included in the saved draft and independent assessment',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
+ const freeOffer='I can offer a free guided first session using one sample dataset. Would that be useful?';
+ try{await run(x.scope,"UPDATE settings SET data=json_set(data,'$.freeOffer',?) WHERE id=1",freeOffer);await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<9;i++)await tick(x.scope);const d=await one<any>(x.scope,'SELECT * FROM drafts');assert.ok(d);assert.ok(d.body.includes(freeOffer));const assessment=ai.calls.find(c=>c.text?.format.name==='relay_draft_assess');assert.ok(JSON.parse(assessment!.input).draft.body.includes(freeOffer));assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);}finally{globalThis.fetch=original;x.close();}
+});
+
+test('hybrid discovery persists one actor run, feeds professional evidence to research and performs separate public-contact enrichment',async()=>{
+ const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();let starts=0;
+ x.scope.APIFY_TOKEN='apify-fixture';
+ globalThis.fetch=async(url,init)=>{
+  const u=String(url);
+  if(u.includes('api.apify.com')){
+   if(u.includes('/acts/')){starts++;const input=JSON.parse(String(init?.body));assert.equal(input.profileScraperMode,'Full');return Response.json({data:{id:'run123',defaultDatasetId:'dataset123'}});}
+   if(u.includes('/actor-runs/'))return Response.json({data:{id:'run123',status:'SUCCEEDED',defaultDatasetId:'dataset123',usageTotalUsd:0.2}});
+   if(u.includes('/datasets/'))return Response.json([{linkedinUrl:'https://www.linkedin.com/in/pump-operations',firstName:'Alex',lastName:'Example',headline:'Pump operations',about:'I collect flange sizes and pressure specifications for industrial pump quotations.'}]);
+   throw Error('Unexpected Apify request');
+  }
+  const response=await ai.fetcher(url,init);
+  if(u==='https://api.openai.com/v1/responses'&&JSON.parse(String(init?.body)).text?.format.name==='relay_linkedin_plan'){
+   const data:any=await response.json();data.output.at(-1).content[0].text=JSON.stringify({searchQuery:'pumps',currentJobTitles:['Operations Manager']});return Response.json(data);
+  }
+  return response;
+ };
+ try{await run(x.scope,"UPDATE settings SET data=json_set(data,'$.discoveryProvider','hybrid','$.dailyLeadLimit',1) WHERE id=1");await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<7;i++)await tick(x.scope);assert.equal(starts,1);assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);const discovery=ai.calls.find(c=>c.tools&&JSON.parse(c.input).linkedinProfessionals);assert.equal(JSON.parse(discovery!.input).linkedinProfessionals.length,1);assert.ok(ai.calls.some(c=>c.instructions.includes('CONTACT ENRICHMENT')));assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);const expense=await one<any>(x.scope,"SELECT state,actual FROM expenses WHERE provider='apify'");assert.equal(expense.state,'settled');assert.equal(expense.actual,0.2);}finally{globalThis.fetch=original;x.close();}
+});
+
+test('opted-in verified work email is admitted without a public email quotation and survives through the draft gate',async()=>{
+ const x=await setup(),old=globalThis.fetch,ai=mockOpenAI(),profileUrl='https://www.linkedin.com/in/alex-example',email='alex@pumps.example.com';let starts=0;
+ x.scope.APIFY_TOKEN='fixture';
+ globalThis.fetch=async(url,init)=>{
+  const u=String(url);
+  if(u.includes('api.apify.com')){
+   if(u.includes('/acts/')){starts++;const id=u.includes('profile-search')?'search123':u.includes('profile-scraper')?'enrich123':'verify123';return Response.json({data:{id}});}
+   if(u.includes('/actor-runs/')){const id=u.split('/').at(-1);return Response.json({data:{id,status:'SUCCEEDED',defaultDatasetId:id,usageTotalUsd:0.05}});}
+   if(u.includes('/datasets/search123/'))return Response.json([{linkedinUrl:profileUrl,firstName:'Alex',lastName:'Example',headline:'Pump operations',about:'I collect flange sizes and pressure specifications for industrial pump quotations.'}]);
+   if(u.includes('/datasets/enrich123/'))return Response.json([{linkedinUrl:profileUrl,emails:[{email,status:'valid',catchAllDomain:false,free:false}]}]);
+   if(u.includes('/datasets/verify123/'))return Response.json([{email,status:'good',technical_status:'valid',reason:'ok',free:false,role:false,disposable:false,catch_all:false,mailInfrastructureFound:true}]);
+   throw Error('Unexpected actor call');
+  }
+  const response=await ai.fetcher(url,init);if(u!=='https://api.openai.com/v1/responses')return response;
+  const stage=JSON.parse(String(init?.body)).text?.format.name;if(!stage)return response;
+  const data:any=await response.json(),content=data.output.at(-1).content[0];
+  if(stage==='relay_linkedin_plan')content.text=JSON.stringify({searchQuery:'pumps',currentJobTitles:['Operations Manager']});
+  if(stage==='relay_work_email_shortlist')content.text=JSON.stringify({people:[{profileUrl,company:'Example Pumps',website:'https://pumps.example.com',contactName:'Alex Example'}]});
+  if(['relay_discover_extract','relay_discover_evidence_repair'].includes(stage)){const parsed=JSON.parse(content.text),c=parsed.candidates[0];c.contact_name='Alex Example';c.publicContact={email,sourceUrl:'https://console.apify.com/actors/runs/verify123',excerpt:'Provider-verified professional work email: '+email,identityConfirmed:true,evidenceType:'provider_verification',reason:'Verified'};content.text=JSON.stringify(parsed);}
+  return Response.json(data);
+ };
+ try{
+  await run(x.scope,"UPDATE settings SET data=json_set(data,'$.discoveryProvider','hybrid','$.allowWorkEmailEnrichment',json('true'),'$.dailyLeadLimit',1) WHERE id=1");
+  await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<15;i++)await tick(x.scope);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(lead.contact_status,'provider_verified');assert.equal(lead.email,email);assert.equal(publicContactReady(lead),true);assert.equal(JSON.parse(lead.contact_evidence).verificationRunId,'verify123');assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal(starts,3);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=old;x.close();}
+});

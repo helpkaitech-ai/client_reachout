@@ -99,7 +99,7 @@ for(const failure of ['fit','empty','assessment','contact'] as const)test('a '+f
 test('original discovery URL, excerpt and role reach deep research and all decisions share qualification guidance',async()=>{
  const x=await setup(),original=globalThis.fetch,ai=mockOpenAI();globalThis.fetch=ai.fetcher;
  try{await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<13;i++)await tick(x.scope);
-  const research=ai.calls.find(c=>c.tools&&c.instructions.includes('Re-open and verify'));
+  const research=ai.calls.find(c=>c.tools&&c.instructions.includes('Cross-check the supplied discovery source URL'));
   assert.ok(research);const input=JSON.parse(research.input);assert.equal(input.discoveryEvidence.sourceUrl,sourceUrls[0]);assert.ok(input.discoveryEvidence.fitEvidence);assert.ok(input.discoveryEvidence.evidenceExcerpt);
   for(const stage of ['discover_extract','solution_design','draft_generate','draft_assess'])assert.ok(ai.calls.find(c=>c.text?.format.name==='relay_'+stage)?.instructions.includes('Apply the same qualification standard'));
   const result:any=await prospectPage(x.scope,page);assert.equal(result.total,1);assert.equal(result.rows[0].email_status,'pending');assert.equal(await qualifiedToday(x.scope),1);
@@ -184,5 +184,15 @@ test('the qualified prospect target stays independent of a lower daily sending c
   }
   assert.equal(await qualifiedToday(x.scope),12);
   assert.equal(await admissionAvailable(x.scope,await settings(x.scope),'thirteenth'),false);
+ }finally{x.close();}
+});
+
+test('cancelled search after a product edit cannot block a new manual search',async()=>{
+ const x=await setup();try{
+  const first=await startDiscovery(x.scope,await settings(x.scope),undefined,'old-profile');
+  await run(x.scope,"UPDATE jobs SET state='cancelled' WHERE id=?",'discovery:'+first.runId);
+  await run(x.scope,"UPDATE discovery_cycles SET completed_at=?",now());
+  const next=await startDiscovery(x.scope,await settings(x.scope),undefined,'new-profile');
+  assert.equal(next.runId,'new-profile');assert.equal(next.state,'queued');
  }finally{x.close();}
 });

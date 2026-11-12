@@ -74,9 +74,9 @@ test('shared budget reservations pause before fetch, including existing expenses
  try{await run(env,"INSERT INTO expenses(id,provider,month,reserved,reference,created_at) VALUES('prior','openai',?,44.99,'old',?)",month(),now());await assert.rejects(openai(env,testSettings,'x','x','ref',{search:true,workflow:{jobId:'budget',paidCalls:0},stage:'search'}),BudgetPaused);assert.equal(calls,0);assert.equal((await all(env,'SELECT * FROM ai_attempts')).length,0);}finally{globalThis.fetch=original;close();}
 });
 test('registrable domain handling recognizes public suffixes without merging different businesses',()=>{assert.equal(domainOf('https://shop.example.co.uk/contact'),'example.co.uk');assert.notEqual(entityKey('North Pumps','https://example.co.uk','Leeds'),entityKey('South Pumps','https://example.co.uk','Leeds'));});
-test('active runtime has no removed provider credentials or HTTP dependencies',()=>{
- for(const file of fs.readdirSync('src').filter(x=>x.endsWith('.ts'))){const s=fs.readFileSync('src/'+file,'utf8');assert.doesNotMatch(s,/api\.apify\.com|api\.hunter\.io|APIFY_TOKEN|HUNTER_API_KEY/);}
- assert.doesNotMatch(fs.readFileSync('public/app.js','utf8'),/Apify|Hunter/);
+test('active runtime keeps retired Hunter removed while Apify is an explicit optional integration',()=>{
+ for(const file of fs.readdirSync('src').filter(x=>x.endsWith('.ts'))){const s=fs.readFileSync('src/'+file,'utf8');assert.doesNotMatch(s,/api\.hunter\.io|HUNTER_API_KEY/);}
+ assert.doesNotMatch(fs.readFileSync('public/app.js','utf8'),/Hunter/);
 });
 
 test('additive migration preserves sent history, owner edits, suppressions, approvals and legacy costs',()=>{

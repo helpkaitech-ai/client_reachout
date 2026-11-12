@@ -152,3 +152,9 @@ test('evidence formatting is normalized without accepting paraphrases and failed
  const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch,{fetcher,calls}=mockOpenAI({badEvidence:true});globalThis.fetch=fetcher;
  try{const p=await approved(env),scope=await scopeProduct(env,p);scope.ENABLE_AUTOMATION='true';await startDiscovery(scope,await settings(scope));for(let i=0;i<5;i++)await tick(scope);assert.equal((await all(scope,'SELECT id FROM leads')).length,1);const discovery=calls.filter(c=>c.text?.format?.name==='relay_discover_evidence_repair');assert.equal(discovery.length,1);assert.equal((await all(scope,"SELECT id FROM ai_attempts WHERE stage='discover_search'")).length,1);}finally{globalThis.fetch=original;close();}
 });
+
+test('product research stays on its domain and repairs one paraphrased capability quote without repeating search',async()=>{
+ const {env,close}=database();env.OPENAI_API_KEY='fixture';const original=globalThis.fetch,ai=mockOpenAI();
+ globalThis.fetch=async(url,init)=>{const response=await ai.fetcher(url,init);if(String(url)!=='https://api.openai.com/v1/responses')return response;const request=JSON.parse(String(init?.body));if(request.text?.format.name!=='relay_product_extract')return response;const data:any=await response.json(),content=data.output.at(-1).content[0],profile=JSON.parse(content.text);profile.useCases[0].capabilityEvidence.excerpt='A paraphrase that does not occur in the product evidence';content.text=JSON.stringify(profile);return Response.json(data);};
+ try{const p=await approved(env);assert.equal(p.state,'approved');assert.equal(ai.calls.filter(c=>c.tools).length,1);assert.deepEqual(ai.calls[0].tools[0].filters.allowed_domains,['pumps.example.com']);assert.match(ai.calls[0].instructions,/CURRENT TASK BOUNDARY/);assert.equal(ai.calls.filter(c=>c.text?.format.name==='relay_product_profile_evidence_repair').length,1);}finally{globalThis.fetch=original;close();}
+});

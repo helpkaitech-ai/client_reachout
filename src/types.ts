@@ -3,6 +3,7 @@ export interface Env {
  DB: D1Database; ASSETS: Fetcher; AUTH_STORE: DurableObjectNamespace; WORKSPACE_BACKUP?: DurableObjectNamespace;
  PRODUCT_WORKSPACES?: DurableObjectNamespace; GLOBAL_DB?:D1Database; PRODUCT_ID?:string; PRODUCT_NAME?:string; PRODUCT_BRIEF?:string; PRODUCT_APPROVED?:boolean; PRODUCT_REVISION?:number; DISCOVERY_PAUSED_UNTIL?:string; OUTREACH_PAUSED?:boolean;
  APP_URL?: string; ADMIN_PASSWORD?: string; SESSION_SECRET?: string;
+ APIFY_TOKEN?: string;
  OPENAI_API_KEY?: string; OPENAI_RESEARCH_MODEL?: string; OPENAI_DRAFT_MODEL?: string;
  GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GOOGLE_REFRESH_TOKEN?: string;
  TELEGRAM_BOT_TOKEN?: string; TELEGRAM_CHAT_ID?: string;
@@ -17,6 +18,7 @@ export interface Settings {
  locationIds?: string[];
  dailyNewLimit: number; dailyTotalLimit: number; dailyResearchLimit: number; dailyLeadLimit:number;
  openaiBudget: number;
+ discoveryProvider: 'openai'|'hybrid'; apifyBudget:number; apifyRunCap:number; freeOffer:string; allowWorkEmailEnrichment:boolean;
  discoveryResults: number; discoveryIntervalDays: number; discoveryPausedUntil?:string;
  researchAutomation?: boolean; outreachPaused?:boolean; discoveryPaused?:boolean; prospectingPaused?:boolean;
  sendStartHour: number; sendEndHour: number; sendWeekends: boolean;
@@ -48,7 +50,7 @@ export interface Job { id:string; kind:string; lead_id:string|null; payload:stri
 export const defaults: Settings = {
  locationIds:['worldwide'],
  dailyNewLimit:12, dailyTotalLimit:12, dailyResearchLimit:60,dailyLeadLimit:12,
- openaiBudget:50, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:false, outreachPaused:false, discoveryPaused:true, prospectingPaused:false,
+ openaiBudget:50, discoveryProvider:'openai', apifyBudget:10, apifyRunCap:1, freeOffer:'', allowWorkEmailEnrichment:false, discoveryResults:10, discoveryIntervalDays:6, discoveryPausedUntil:'', researchAutomation:false, outreachPaused:false, discoveryPaused:true, prospectingPaused:false,
  sendStartHour:9, sendEndHour:17, sendWeekends:false, followupDays:[4,10,18],
  senderName:'Rushi Shukla', businessAddress:'',
  offerContext,

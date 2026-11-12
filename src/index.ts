@@ -1,3 +1,4 @@
+import {apifyRequest,linkedinActor} from './apify';
 import type { Env, Lead, Draft, Settings } from './types';
 import { acquire, all, audit, day, enqueue, month, now, one, release, run, settings } from './db';
 import { authenticated, csrf, login, logout, sameSecret, AuthUnavailable } from './auth';
@@ -30,7 +31,7 @@ async function body(request:Request,limit=200000) {
 }
 function connections(env:Env,s:Settings) {
  return {
-  openai:!!env.OPENAI_API_KEY,discoveryProvider:'openai',
+  openai:!!env.OPENAI_API_KEY,apify:!!env.APIFY_TOKEN,discoveryProvider:s.discoveryProvider,linkedinActor,
   gmail:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_REFRESH_TOKEN),
   telegram:!!(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_CHAT_ID),
   notificationEmail:env.NOTIFY_EMAIL||'',sender:env.SENDER_EMAIL||'',
@@ -115,6 +116,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  if(path==='/api/notify'){await notifyDigest(env,s,true);return {ok:true};}
  if(path==='/api/connections/check') {
   const results:Record<string,string>={};
+  if(env.APIFY_TOKEN){try{await apifyRequest(env,'users/me');results.apify='Apify token authenticated; actor runs use the configured spending cap';}catch{results.apify='Apify authentication failed; check the Worker secret and account access';}}
   if(env.OPENAI_API_KEY){try{await jsonRequest('OpenAI','https://api.openai.com/v1/models/'+encodeURIComponent(env.OPENAI_DRAFT_MODEL||'gpt-5.6-sol'),{headers:{Authorization:`Bearer ${env.OPENAI_API_KEY}`}});results.openai='Model accessible (read-only check)';}catch{results.openai='Connection/model check failed';}}
   if(env.GOOGLE_REFRESH_TOKEN){try{const p=await gmail(env,'profile');results.gmail=`Connected mailbox: ${p.emailAddress}`;const aliases=await gmail(env,'settings/sendAs');const valid=aliases.sendAs?.find((a:any)=>a.sendAsEmail===env.SENDER_EMAIL&&a.verificationStatus==='accepted');results.sender=valid?'Sender address is configured':'Sender address is not an accepted Gmail send-as address';}catch{results.gmail='Check OAuth credentials, enabled Gmail API and scopes';}}
   if(env.TELEGRAM_BOT_TOKEN){try{await jsonRequest('Telegram',`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`);results.telegram='Bot authenticated; chat access is checked when notifying';}catch{results.telegram='Bot authentication failed';}}

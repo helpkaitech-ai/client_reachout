@@ -1,3 +1,4 @@
+import {verifiedWorkContact} from './work-email-policy';
 import type {Env,Settings,Lead} from './types';
 import {one,run,day,now,audit} from './db';
 import {cleanEmail,publicUrl} from './policy';
@@ -14,15 +15,16 @@ export function readyDraftSql(product:boolean,l='l',d='d',saved=false){
  AND (CASE WHEN json_valid(${d}.evidence) THEN (SELECT COUNT(*) FROM json_each(${d}.evidence) e WHERE CASE WHEN e.type='object' THEN json_extract(e.value,'$.kind')='observed' AND json_extract(e.value,'$.url') LIKE 'http%://%' ELSE 0 END) ELSE 0 END)>=2
  AND (${d}.status='sent' OR (${l}.research_at IS NOT NULL AND ${l}.research_at>=strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')))
  ${product?`AND (CASE WHEN json_valid(${l}.dossier) THEN json_extract(${l}.dossier,'$.qualified') ELSE 0 END)=1
- AND ${l}.contact_status='publicly_sourced'
+ AND ((${l}.contact_status='provider_verified' AND ${verifiedContactSql(l)}) OR (${l}.contact_status='publicly_sourced'
  AND (CASE WHEN json_valid(${l}.contact_evidence) THEN json_extract(${l}.contact_evidence,'$.identityConfirmed')=1
  AND json_extract(${l}.contact_evidence,'$.evidenceType')='opened_page'
  AND length(coalesce(json_extract(${l}.contact_evidence,'$.sourceUrl'),''))>8
- AND instr(lower(coalesce(json_extract(${l}.contact_evidence,'$.excerpt'),'')),lower(${l}.email))>0 ELSE 0 END)`:''}
+ AND instr(lower(coalesce(json_extract(${l}.contact_evidence,'$.excerpt'),'')),lower(${l}.email))>0 ELSE 0 END)))`:''}
  ${saved?'':`AND NOT EXISTS(SELECT 1 FROM suppressions s WHERE s.email=${l}.email)`}`;
 }
 export function publicContactReady(lead:Lead){
  let c:any={};try{c=JSON.parse(lead.contact_evidence||'{}');}catch{}
+ if(lead.contact_status==='provider_verified')return verifiedWorkContact(c,lead.email,lead.website);
  return !!cleanEmail(lead.email)&&lead.contact_status==='publicly_sourced'&&c.identityConfirmed===true&&c.evidenceType==='opened_page'&&!!publicUrl(c.sourceUrl)&&String(c.excerpt||'').toLowerCase().includes(lead.email!.toLowerCase());
 }
 export async function rejectCandidate(env:Env,lead:Lead,jobId:string,reason:string,rewrite?:{id:string;version:number}){
@@ -46,4 +48,22 @@ export async function recordAdmission(env:Env,leadId:string,draftId:string){
 export async function backfillAdmissions(env:Env){
  await run(env,`INSERT OR IGNORE INTO qualified_prospects(lead_id,draft_id,admitted_at)
  SELECT l.id,d.id,d.created_at FROM leads l JOIN drafts d ON d.lead_id=l.id WHERE d.kind='initial' AND ${readyDraftSql(!!env.PRODUCT_ID)} ORDER BY d.created_at,d.id`);
+}
+
+function verifiedContactSql(l:string){
+ const j=(path:string)=>`json_extract(${l}.contact_evidence,'$.${path}')`;
+ return `(CASE WHEN json_valid(${l}.contact_evidence) THEN ${j('status')}='provider_verified'
+ AND ${j('email')}=${l}.email AND ${j('companyDomain')}=${l}.domain
+ AND (substr(${l}.email,instr(${l}.email,'@')+1)=${l}.domain OR substr(${l}.email,instr(${l}.email,'@')+1) LIKE '%.'||${l}.domain)
+ AND ${j('identityConfirmed')}=1 AND ${j('evidenceType')}='provider_verification'
+ AND ${j('provider')}='apify/thirdwatch-email-verifier'
+ AND ${j('verification.email')}=${l}.email AND ${j('verification.status')}='good'
+ AND ${j('verification.technical_status')}='valid' AND ${j('verification.reason')}='ok'
+ AND ${j('verification.free')}=0 AND ${j('verification.role')}=0 AND ${j('verification.disposable')}=0
+ AND ${j('verification.catch_all')}=0 AND ${j('verification.mailInfrastructureFound')}=1
+ AND length(${j('verificationRunId')})>0 AND ${j('verificationRunId')} NOT GLOB '*[^a-zA-Z0-9]*'
+ AND length(${j('enrichmentRunId')})>0 AND ${j('enrichmentRunId')} NOT GLOB '*[^a-zA-Z0-9]*'
+ AND (${j('profileUrl')} LIKE 'https://linkedin.com/in/%' OR ${j('profileUrl')} LIKE 'https://www.linkedin.com/in/%' OR ${j('profileUrl')} GLOB 'https://[a-z][a-z].linkedin.com/in/*')
+ AND datetime(${j('observedAt')}) BETWEEN datetime('now','-30 days') AND datetime('now','+5 minutes')
+ ELSE 0 END)`;
 }

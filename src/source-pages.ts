@@ -3,7 +3,7 @@ import {one,run,now} from './db';
 import {publicUrl,cleanEmail} from './policy';
 import {domainOf,sourceKey,containsExcerpt,type Source} from './evidence';
 
-export interface SourcePage {url:string;finalUrl:string;text:string;fetchedAt:string;contactLinks?:string[]}
+export interface SourcePage {url:string;finalUrl:string;text:string;fetchedAt:string;contactLinks?:string[];provider?:'apify';providerRunId?:string}
 const BYTE_LIMIT=384*1024;
 function decode(text:string){return text.replace(/&#(x[\da-f]+|\d+);|&(amp|quot|apos|lt|gt|nbsp);/gi,(whole,namedCode,name)=>{
  if(namedCode){const n=namedCode[0].toLowerCase()==='x'?parseInt(namedCode.slice(1),16):Number(namedCode);return n>0&&n<=0x10ffff?String.fromCodePoint(n):whole;}
@@ -54,7 +54,7 @@ export async function sourcePages(env:Env,key:string,urls:string[]):Promise<Sour
  await run(env,'INSERT OR IGNORE INTO pipeline_results(job_id,data,created_at) VALUES(?,?,?)',key,JSON.stringify({pages,attemptedUrls:[...unique,...extra]}),now());return pages;
 }
 export function citedPages(response:any){return [...new Set<string>((response.output||[]).flatMap((item:any)=>(item.content||[]).flatMap((c:any)=>(c.annotations||[]).filter((a:any)=>a.url).map((a:any)=>String(a.url)))))];}
-export function pageEvidence(report:string,pages:SourcePage[]){return report+'\n\nDIRECTLY FETCHED PUBLIC PAGE SNAPSHOTS (quote text only; URLs identify provenance):\n'+pages.map(p=>`SOURCE URL: ${p.url}\nFINAL URL: ${p.finalUrl}\nEVIDENCE TYPE: opened_page\nPAGE TEXT: ${p.text}`).join('\n\n');}
+export function pageEvidence(report:string,pages:SourcePage[]){return report+'\n\nDIRECTLY FETCHED PUBLIC PAGE SNAPSHOTS (quote text only; URLs identify provenance):\n'+pages.map(p=>`SOURCE URL: ${p.url}\nFINAL URL: ${p.finalUrl}\nEVIDENCE TYPE: opened_page${p.provider?` (public professional profile retrieved by ${p.provider}, run ${p.providerRunId})`:""}\nPAGE TEXT: ${p.text}`).join('\n\n');}
 export function evidenceSources(sources:Source[],pages:SourcePage[]):Source[]{const map=new Map(sources.map(s=>[sourceKey(s.url),s]));for(const p of pages)map.set(sourceKey(p.url),{url:p.url,title:map.get(sourceKey(p.url))?.title||new URL(p.url).hostname,evidenceType:'opened_page'});return [...map.values()];}
 export function groundedExcerpt(url:string,excerpt:string,report:string,sources:Source[],pages:SourcePage[]){
  const snapshot=pages.find(p=>sourceKey(p.url)===sourceKey(url));

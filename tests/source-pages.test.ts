@@ -65,3 +65,8 @@ test('blocked, oversized and private redirect pages never become evidence',async
   assert.equal(pageText('<p>A &amp; B</p><style>not evidence</style>'),'A & B');
  }finally{globalThis.fetch=original;}
 });
+
+test('current campaign location replaces locations embedded in generated profile queries',()=>{
+ const campaign={query:'startup finance analysis Singapore',location:'United States',country:'US',timezone:'America/New_York',enabled:true};
+ assert.deepEqual(discoveryQueries(campaign,undefined,[],0,['Singapore, Singapore']),['United States startup finance analysis']);
+});
