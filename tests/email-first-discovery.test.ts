@@ -235,6 +235,7 @@ test('opted-in verified work email is admitted without a public email quotation 
   const stage=JSON.parse(String(init?.body)).text?.format.name;if(!stage)return response;
   const data:any=await response.json(),content=data.output.at(-1).content[0];
   if(stage==='relay_linkedin_plan')content.text=JSON.stringify({searchQuery:'pumps',currentJobTitles:['Operations Manager']});
+  if(stage==='relay_draft_assess')content.text=JSON.stringify({specific:true,supported:true,appropriate:false,reason:'The work email lacks independent verification evidence.'});
   if(stage==='relay_work_email_shortlist')content.text=JSON.stringify({people:[{profileUrl,company:'Example Pumps',website:'https://pumps.example.com',contactName:'Alex Example'}]});
   if(['relay_discover_extract','relay_discover_evidence_repair'].includes(stage)){const parsed=JSON.parse(content.text),c=parsed.candidates[0];c.contact_name='Alex Example';c.publicContact={email,sourceUrl:'https://console.apify.com/actors/runs/verify123',excerpt:'Provider-verified professional work email: '+email,identityConfirmed:true,evidenceType:'provider_verification',reason:'Verified'};content.text=JSON.stringify(parsed);}
   return Response.json(data);
@@ -242,6 +243,21 @@ test('opted-in verified work email is admitted without a public email quotation 
  try{
   await run(x.scope,"UPDATE settings SET data=json_set(data,'$.discoveryProvider','hybrid','$.allowWorkEmailEnrichment',json('true'),'$.dailyLeadLimit',1) WHERE id=1");
   await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<15;i++)await tick(x.scope);
-  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(lead.contact_status,'provider_verified');assert.equal(lead.verification,'valid');assert.equal(lead.email,email);assert.equal(publicContactReady(lead),true);assert.equal(JSON.parse(lead.contact_evidence).verificationRunId,'verify123');assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal(starts,3);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+  const lead=await one<any>(x.scope,'SELECT * FROM leads');assert.ok(lead);assert.equal(lead.contact_status,'provider_verified');assert.equal(lead.verification,'valid');assert.equal(lead.email,email);assert.equal(publicContactReady(lead),true);assert.equal(JSON.parse(lead.contact_evidence).verificationRunId,'verify123');assert.equal((await all(x.scope,'SELECT * FROM drafts')).length,1);assert.equal(starts,3);const review=ai.calls.find(c=>c.text?.format.name==='relay_draft_assess_evidence_recheck');assert.equal(JSON.parse(review!.input).verifiedContact.evidence.verification.status,'good');assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{globalThis.fetch=old;x.close();}
+});
+
+test('an assessor falsely claiming the appended free offer is absent gets one independent recheck of the final body',async()=>{
+ const x=await setup(),old=globalThis.fetch,ai=aiWith((stage,out)=>{
+  if(stage==='draft_generate')out.warnings.push('Free offer intentionally omitted because the application appends it.');
+  if(stage==='draft_assess'){out.appropriate=false;out.reason='The authorized free offer is missing.';}
+ });globalThis.fetch=ai.fetcher;
+ const freeOffer='I can offer a free guided first session using one authorized sample dataset. Would that be useful?';
+ try{
+  await run(x.scope,"UPDATE settings SET data=json_set(data,'$.freeOffer',?,'$.dailyLeadLimit',1) WHERE id=1",freeOffer);
+  await startDiscovery(x.scope,await settings(x.scope));for(let i=0;i<12;i++)await tick(x.scope);
+  const draft=await one<any>(x.scope,'SELECT * FROM drafts');assert.ok(draft);assert.ok(draft.body.includes(freeOffer));assert.doesNotMatch(draft.warnings,/intentionally omitted/);
+  const assess=ai.calls.find(c=>c.text?.format.name==='relay_draft_assess');assert.equal(JSON.parse(assess!.input).freeOfferIncluded,true);
+  const rechecks=ai.calls.filter(c=>c.text?.format.name==='relay_draft_assess_evidence_recheck');assert.equal(rechecks.length,1);assert.ok(JSON.parse(rechecks[0].input).finalDraft.body.includes(freeOffer));assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
  }finally{globalThis.fetch=old;x.close();}
 });
