@@ -24,9 +24,11 @@ export async function discoveryProgress(env:Env,s:Settings){
  const pending=await one<{value:string}>(env,"SELECT value FROM integration_state WHERE key='manual_search_request'");
  const request=pending?JSON.parse(pending.value):null,profiling=!!request&&!!env.PRODUCT_ID&&!env.PRODUCT_APPROVED;
  const rejected=await one<any>(env,`SELECT COUNT(*) candidates,coalesce(SUM(c.outcome='no_public_email'),0) contact,coalesce(SUM(c.outcome='not_a_fit'),0) fit,coalesce(SUM(c.outcome='needs_review'),0) evidence FROM discovery_candidates c JOIN discovery_cycle_batches b ON b.batch_id=c.batch_id WHERE b.cycle_id=?`,cycle?.id||'');
- const state=profiling?'profiling':!cycle?'not_started':qualified>=cycle.target?'complete':allowance.attempts>=allowance.researchLimit?'research_limit':allowance.searches>=allowance.searchLimit?'search_limit':cycle.completed_at?'stopped':'researching';
+ const stopped=cycle&&await one(env,'SELECT key FROM integration_state WHERE key=?','stopped-search:'+cycle.id);
+ const state=profiling?'profiling':!cycle?'not_started':stopped?'stopped':qualified>=cycle.target?'complete':allowance.attempts>=allowance.researchLimit?'research_limit':allowance.searches>=allowance.searchLimit?'search_limit':cycle.completed_at?'stopped':'researching';
  const reasons={profiling:'Preparing product profile…',not_started:'',complete:'Search complete.',research_limit:'Research allowance reached. Start a new search to continue.',search_limit:'Search allowance reached. Try another search or location.',stopped:'Search ended.',researching:'Searching…'};
- return {id:cycle?.id,qualified,target:profiling?request.target:cycle?.target||12,state,reason:reasons[state],...allowance,candidates:rejected?.candidates||0,rejected:(rejected?.contact||0)+(rejected?.fit||0)+(rejected?.evidence||0),contactRejected:rejected?.contact||0,fitRejected:rejected?.fit||0,evidenceRejected:rejected?.evidence||0};
+ const target=profiling?request.target:cycle?.target||12;
+ return {percent:Math.min(100,Math.floor(qualified/target*100)),canStop:profiling||!!cycle&&!cycle.completed_at&&qualified<cycle.target,id:cycle?.id,qualified,target:profiling?request.target:cycle?.target||12,state,reason:reasons[state],...allowance,candidates:rejected?.candidates||0,rejected:(rejected?.contact||0)+(rejected?.fit||0)+(rejected?.evidence||0),contactRejected:rejected?.contact||0,fitRejected:rejected?.fit||0,evidenceRejected:rejected?.evidence||0};
 }
 export async function manualCampaignPending(env:Env,s:Settings){
  const cycle=await currentCycle(env);if(!cycle||cycle.completed_at)return false;

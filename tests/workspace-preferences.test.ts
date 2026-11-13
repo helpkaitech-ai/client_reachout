@@ -122,14 +122,14 @@ test('a delayed response from another workspace cannot replace the selected prod
  }finally{release();dom.window.close();close();}
 });
 
-test('Find prospects with changed product locations queues automatic profile generation before searching',async()=>{
+test('changed search locations preserve the profile and existing drafts while immediately queuing a search',async()=>{
  const {env,close}=database(),base=env.APP_URL!,dom=new JSDOM(fs.readFileSync('public/index.html','utf8'),{url:base,runScripts:'outside-only'}),doc=dom.window.document,paths:string[]=[];env.OPENAI_API_KEY='mock';
  const until=async(fn:()=>boolean)=>{for(let i=0;i<150;i++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Location change UI timed out');};
  try{
-  const [a]=await pair(env);await manualApprove(env,a.id);const cookie=await login(env);
+  const [a]=await pair(env);const initial=await manualApprove(env,a.id);await run(initial,"UPDATE settings SET data=json_set(data,'$.campaigns',json(?))",JSON.stringify([{query:'pump suppliers',location:'London, UK',country:'GB',timezone:'Europe/London',enabled:true}]));const lead=await readyLead(initial),draft=await readyDraft(initial,lead);const cookie=await login(env);
   (dom.window as any).fetch=(path:string,init:any)=>{paths.push(path);return worker.fetch(new Request(base+path,{...init,headers:{...init.headers,Origin:base,Cookie:cookie}}),env,ctx);};
   dom.window.eval(fs.readFileSync('public/app.js','utf8'));await until(()=>!!doc.querySelector('[data-action="discover"]'));const select=doc.querySelector('#product-switch') as unknown as unknown as HTMLSelectElement;select.value=a.id;select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));await until(()=>doc.querySelector('#breadcrumb')?.textContent==='Product A / Prospects');
-  const country=doc.querySelector('#country-filter') as unknown as HTMLSelectElement;country.value='country:IN';country.dispatchEvent(new dom.window.Event('change',{bubbles:true}));const city=doc.querySelector('#place-filter') as unknown as HTMLSelectElement;city.value='city:mumbai';city.dispatchEvent(new dom.window.Event('change',{bubbles:true}));(doc.querySelector('[data-action="discover"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('profile'));
-  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),true);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,undefined);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,0);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);
+  const country=doc.querySelector('#country-filter') as unknown as HTMLSelectElement;country.value='country:IN';country.dispatchEvent(new dom.window.Event('change',{bubbles:true}));const city=doc.querySelector('#place-filter') as unknown as HTMLSelectElement;city.value='city:mumbai';city.dispatchEvent(new dom.window.Event('change',{bubbles:true}));(doc.querySelector('[data-action="discover"]') as HTMLElement).click();await until(()=>!!doc.querySelector('#toast')?.textContent?.includes('Searching'));
+  assert.equal(paths.some(p=>/^\/api\/discover\?/.test(p)),true);const scope=await scopeProduct(env,await product(env,a.id));assert.equal((await settings(scope)).prospectingPaused,undefined);assert.equal((await all(scope,'SELECT * FROM discovery_batches')).length,1);assert.equal((await all(scope,'SELECT * FROM ai_attempts')).length,0);assert.equal((await product(env,a.id)).revision,a.revision);assert.equal((await product(env,a.id)).state,'approved');assert.equal((await one<any>(scope,'SELECT quality_hold FROM drafts WHERE id=?',draft.id)).quality_hold,'');
  }finally{dom.window.close();close();}
 });

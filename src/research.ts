@@ -1,3 +1,4 @@
+import {assertJobActive} from './job-control';
 import {emailStyleInstructions} from './email-style';
 import type { Env, Settings, Lead, Research, Evidence, Draft } from './types';
 import { all, audit, now, one, run, uid } from './db';
@@ -39,6 +40,7 @@ export function specificOfferProblem(parsed:any,allowed:Set<string>) {
 }
 export async function draftLead(env:Env,s:Settings,lead:Lead,kind:Draft['kind']='initial',inboundId?:string,rewrite?:{id:string;version:number},workflow?:Workflow) {
  if(!await conversationReady(env,lead,kind,s))return;
+ await assertJobActive(env,workflow);
  if(env.PRODUCT_ID){if(!workflow)throw new Error('Product outreach requires a durable workflow');const {draftProductLead}=await import('./product-outreach');return draftProductLead(env,s,lead,kind,inboundId,rewrite,workflow);}
  const existing=rewrite?await one<Draft>(env,"SELECT * FROM drafts WHERE id=? AND lead_id=? AND version=? AND status='pending'",rewrite.id,lead.id,rewrite.version):null;
  if(rewrite&&!existing)return; // Owner edited, sent or discarded it while the job was queued.
@@ -79,17 +81,19 @@ export async function draftLead(env:Env,s:Settings,lead:Lead,kind:Draft['kind']=
  const id=uid();
  const subject=kind==='initial'?String(parsed.subject):kind==='reply'?(messages.find(m=>m.direction==='inbound')?.subject||previous?.subject||String(parsed.subject)):(previous?.subject||String(parsed.subject));
  if(rewrite){
+  await assertJobActive(env,workflow);
   const result=await run(env,`UPDATE drafts SET subject=?,body=?,artifact='',evidence=?,rationale=?,warnings=?,quality_hold=?,free_offer=?,version=version+1,approved_hash=NULL,approved_version=NULL,approved_at=NULL,error=NULL,updated_at=? WHERE id=? AND version=? AND status='pending'`,subject.replace(/[\r\n]/g,' ').slice(0,180),recipientGreeting(content,lead),JSON.stringify(evidence),String(parsed.opportunity||''),JSON.stringify(parsed.warnings||[]),holdReason,JSON.stringify(parsed.freeOffer||{}),now(),rewrite.id,rewrite.version);
   if(result.meta.changes&&kind==='initial'&&!holdReason)await recordAdmission(env,lead.id,rewrite.id);
   await audit(env,result.meta.changes?'draft_rewritten':'draft_rewrite_skipped',rewrite.id,result.meta.changes?'Business-specific free offer embedded in the email; awaiting owner Send':'Owner changed the email during rewriting; saved content preserved');
   return;
  }
  if(!await conversationReady(env,lead,kind,s))return;
+ await assertJobActive(env,workflow);
  await env.DB.batch([
   env.DB.prepare(`INSERT INTO drafts(id,lead_id,kind,subject,body,artifact,evidence,rationale,warnings,in_reply_to,inbound_id,quality_hold,free_offer,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,lead.id,kind,subject.replace(/[\r\n]/g,' ').slice(0,180),recipientGreeting(content,lead),'',JSON.stringify(evidence),String(parsed.opportunity||''),JSON.stringify(parsed.warnings||[]),inbound?.rfc_id||previous?.message_id||null,inboundId||null,holdReason,JSON.stringify(parsed.freeOffer||{}),now(),now()),
-  env.DB.prepare("UPDATE leads SET status=CASE WHEN ?='initial' THEN 'review' ELSE status END,score=?,opportunity=?,updated_at=? WHERE id=?").bind(kind,Math.max(0,Math.min(100,Number(parsed.score)||0)),String(parsed.opportunity||''),now(),lead.id)
+  env.DB.prepare("UPDATE leads SET status=CASE WHEN ?='initial' THEN 'review' ELSE status END,score=?,opportunity=?,updated_at=? WHERE id=?").bind(kind,Math.max(0,Math.min(100,Number(parsed.score)||0)),String(parsed.opportunity||''),now(),lead.id),
+  ...(kind==='initial'&&!holdReason?[env.DB.prepare('INSERT OR IGNORE INTO qualified_prospects(lead_id,draft_id,admitted_at) VALUES(?,?,?)').bind(lead.id,id,now())]:[])
  ]);
- if(kind==='initial'&&!holdReason)await recordAdmission(env,lead.id,id);
  if(workflow)await run(env,'INSERT OR REPLACE INTO pipeline_results(job_id,data,created_at) VALUES(?,?,?)',workflow.jobId,JSON.stringify({leadId:lead.id,draftId:id,qualityHold:holdReason,assessment,dossier}),now());
  await audit(env,'draft_created',id,`${kind} draft awaits review; never auto-approved`);
  await followupDraftReady(env,lead,kind,id);

@@ -1,3 +1,4 @@
+import {assertJobActive} from './job-control';
 import type {Env,Settings} from './types';
 import type {Workflow} from './ai';
 import {StageYield} from './ai';
@@ -49,6 +50,7 @@ export async function enrichWorkEmails(env:Env,s:Settings,jobId:string,w:Workflo
  const planned=await openai(env,s,JSON.stringify({research:outputText(report),sources:collectSources(report),professionals:pages.map(p=>({url:p.url,text:p.text}))}),`${researchSecurity} Select up to six strongest relevant professionals meeting the owner targeting at their current employers from this saved research for professional work-email lookup. Return only people with a supplied exact LinkedIn /in/ profile URL and a corroborated current employer's official website. Use the actual named person's current company, not a previous employer, client or consultant's client. Prefer actual business users with evidenced responsibilities. Apply the owner technical-skill audience: for nontechnical or lightly technical users, skip explicit professional software-development/platform-building specialists, without inferring skill from titles. Proficiency and file format may otherwise remain unknown. Do not add people from memory. Do not invent emails.`,jobId+':email-shortlist',{schema:shortlistSchema,workflow:w,stage:'work_email_shortlist',maxOutput:1800});
  const people=JSON.parse(outputText(planned)).people.filter((p:any)=>known.has(sourceKey(p.profileUrl))&&publicUrl(p.website)&&collectSources(report).some(source=>domainOf(source.url)===domainOf(p.website))&&/^https:\/\/(?:[a-z]+\.)?linkedin\.com\/in\/[^/?#]+\/?(?:\?.*)?$/.test(p.profileUrl));
  if(!people.length)return [];
+ await assertJobActive(env,w);
  const enriched=await actorDataset(env,s,jobId+':work-email-enrichment',enrichmentActor,'0.0.141',{profileScraperMode:'Profile details + email search ($10 per 1k)',queries:people.map((p:any)=>p.profileUrl)},'linkedinUrl,email,emails,workEmail,workEmails',items=>professionalEmailRecords(items,people));
  const found:{person:any;email:string;providerRecord:any}[]=[];
  for(const record of enriched.items||[]){
@@ -57,6 +59,7 @@ export async function enrichWorkEmails(env:Env,s:Settings,jobId:string,w:Workflo
   for(const value of possible){const email=workAddress(typeof value==='string'?value:value?.email,person.website);if(email&&value?.catchAllDomain!==true&&value?.free!==true&&!['risky','invalid','undeliverable'].includes(value?.status)&&!found.some(x=>x.email===email))found.push({person,email,providerRecord:{linkedinUrl:record.linkedinUrl,email}});}
  }
  if(!found.length)return [];
+ await assertJobActive(env,w);
  const verified=await actorDataset(env,s,jobId+':work-email-verification',verifierActor,'2.0.12',{emails:found.map(x=>x.email),smtpCheck:true,detectCatchAll:true,checkDomainHealth:false,maxConcurrency:5,smtpTimeoutSecs:10});
  const contacts=[];
  for(const entry of found){const check=verified.items?.find(v=>cleanEmail(v.email)===entry.email);if(!verifiedMailbox(check))continue;

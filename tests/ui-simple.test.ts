@@ -6,27 +6,30 @@ import {defaults} from '../src/types';
 import {locationOptions} from '../src/locations';
 const html=fs.readFileSync('public/index.html','utf8'),code=fs.readFileSync('public/app.js','utf8');
 const flush=()=>new Promise(r=>setTimeout(r,40));
-async function boot(options:{blocked?:boolean;anonymous?:boolean;failSend?:boolean;databaseLimit?:boolean;loginFirst?:boolean;discoveryPausedUntil?:string;outreachPaused?:boolean;discoveryPaused?:boolean}={}){
+async function boot(options:{searching?:boolean;blocked?:boolean;anonymous?:boolean;failSend?:boolean;databaseLimit?:boolean;loginFirst?:boolean;discoveryPausedUntil?:string;outreachPaused?:boolean;discoveryPaused?:boolean}={}){
  const lead={id:'l1',company:'Pump Specialists',email:'team@pumps.example',city:'Leeds',country:'GB',status:'review',verification:'valid',eligibility:'pending',verification_note:'Previously checked address',eligibility_note:'',timezone:'Europe/London',contact_name:'Jane',contact_evidence:JSON.stringify({profileUrl:'https://www.linkedin.com/in/jane-fixture/'}),last_sent_at:null,next_followup_at:null,followup_count:0};
  const draft={id:'d1',lead_id:'l1',company:lead.company,subject:'A pump enquiry example',body:'Your catalogue lists pressure ratings. Prepyr could help review one table of pump specifications.',artifact:'',evidence:'[]',warnings:'[]',rationale:'Collect pump pressure details',version:1,status:'pending',kind:'initial',sendIssues:[]};
- const data={locationOptions,settings:{...defaults,outreachPaused:!!options.outreachPaused,discoveryPaused:!!options.discoveryPaused,discoveryPausedUntil:options.discoveryPausedUntil||'',businessAddress:options.blocked?'':'A test business address'},connections:{sendingEnabled:!options.blocked,automationEnabled:true},budgets:[],drafts:[draft],leads:[lead],messages:[],jobs:[],events:[],runs:[],notifications:[],expenses:[]};
- const requests:any[]=[],dom=new JSDOM(html,{url:'https://outreach.example.com',runScripts:'outside-only'}),doc=dom.window.document;
+ const data={metrics:{campaign:{id:options.searching?'cycle-1':undefined,qualified:1,target:3,percent:33,state:options.searching?'researching':'not_started',canStop:!!options.searching}},locationOptions,settings:{...defaults,outreachPaused:!!options.outreachPaused,discoveryPaused:!!options.discoveryPaused,discoveryPausedUntil:options.discoveryPausedUntil||'',businessAddress:options.blocked?'':'A test business address'},connections:{sendingEnabled:!options.blocked,automationEnabled:true},budgets:[],drafts:[draft],leads:[lead],messages:[],jobs:[],events:[],runs:[],notifications:[],expenses:[]};
+ const requests:any[]=[],dom=new JSDOM(html,{url:'https://outreach.example.com',runScripts:'outside-only',pretendToBeVisual:true}),doc=dom.window.document;
+ const intervals:{fn:()=>Promise<void>;ms:number}[]=[];(dom.window as any).setInterval=(fn:any,ms:number)=>{intervals.push({fn,ms});return intervals.length;};
  (dom.window.HTMLDialogElement.prototype as any).showModal=function(){this.open=true;};(dom.window.HTMLDialogElement.prototype as any).close=function(){this.open=false;};
- let signedIn=!options.loginFirst;
+ let signedIn=!options.loginFirst,deleted=false;
  (dom.window as any).fetch=async(path:string,init:any)=>{requests.push({path,body:init.body?JSON.parse(init.body):undefined});if(path==='/api/login'){signedIn=true;return Response.json({ok:true});}if(path==='/api/logout'){signedIn=false;return Response.json({ok:true});}if(options.anonymous||!signedIn)return Response.json({error:'Sign in to continue'},{status:401});
   if(path==='/api/session')return Response.json({authenticated:true});
   if(path==='/api/outreach/control'){data.settings.outreachPaused=JSON.parse(init.body).paused;return Response.json({ok:true});}
   if(path==='/api/discovery/control'){data.settings.discoveryPaused=JSON.parse(init.body).paused;return Response.json({ok:true});}
   if(options.databaseLimit)return Response.json({error:'You are signed in. Workspace data is temporarily unavailable. Database daily limit resets at 05:30 IST (00:00 UTC).',code:'DATABASE_DAILY_LIMIT'},{status:503});
+  if(path==='/api/discovery/stop'){data.metrics.campaign.canStop=false;data.metrics.campaign.state='stopped';return Response.json({message:'Search stopped'});}
+  if(path==='/api/prospects/l1/delete'){deleted=true;return Response.json({message:'Prospect deleted'});}
   if(path==='/api/prospects/l1')return Response.json({lead,drafts:[draft],messages:[]});
-  if(path.startsWith('/api/prospects?'))return Response.json({rows:[{...lead,draft_id:'d1',email_status:draft.status==='sent'?'sent':'pending'}],counts:{sent:draft.status==='sent'?1:0,pending:1,contacted:0,followup:0,replied:0,attention:0},total:1,offset:0,hasMore:false});
+  if(path.startsWith('/api/prospects?'))return Response.json({rows:deleted?[]:[{...lead,draft_id:'d1',email_status:draft.status==='sent'?'sent':'pending'}],counts:{sent:draft.status==='sent'?1:0,pending:1,contacted:0,followup:0,replied:0,attention:0},total:deleted?0:1,offset:0,hasMore:false});
   if(path.endsWith('/preview'))return Response.json({message:draft.body+'\n\nRushi',body:draft.body+'\n\nRushi',senderName:'Rushi',product:{name:'Prepyr',website:'https://prepyr.com/'},unsubscribeUrl:'https://outreach.example.com/unsubscribe?id=l1'});
   if(path.endsWith('/edit')){const b=JSON.parse(init.body);Object.assign(draft,{subject:b.subject,body:b.body,artifact:b.artifact,version:draft.version+1});return Response.json({ok:true});}
   if(path.endsWith('/approve')){if(options.failSend)return Response.json({error:'Draft changed. Refresh and try again.'},{status:400});draft.status='sent';return Response.json({status:'sent',message:'Sent through Gmail.'});}
   if(path.startsWith('/api/settings/')){data.settings={...data.settings,...JSON.parse(init.body)};return Response.json({ok:true,settings:data.settings,connections:data.connections});}
   return Response.json(data);
  };
- dom.window.eval(fs.readFileSync('public/theme.js','utf8'));dom.window.eval(code);await flush();const click=async(s:string)=>{(doc.querySelector(s) as HTMLElement).click();await flush();};return {dom,doc,requests,click,draft};
+ dom.window.eval(fs.readFileSync('public/theme.js','utf8'));dom.window.eval(code);await flush();const click=async(s:string)=>{(doc.querySelector(s) as HTMLElement).click();await flush();};return {dom,doc,requests,click,draft,intervals};
 }
 test('opens on Prospects with product research navigation, plain statuses and no Needs attention filter',async()=>{const {dom,doc}=await boot();try{assert.deepEqual([...doc.querySelectorAll('[data-view]')].map(x=>(x as HTMLElement).dataset.view),['products','prospects','dashboard','settings']);assert.equal(doc.querySelector('#breadcrumb')?.textContent,'Prospects');assert.match(doc.querySelector('#content')!.textContent!,/Pending send/);assert.doesNotMatch(doc.querySelector('#content')!.textContent!,/initial draft|Discovery & drafting|Review queue/);assert.equal(doc.querySelector('#status-filter option[value="attention"]'),null);assert.ok(doc.querySelector('[name="searchTarget"]'));assert.equal(doc.querySelector('#live-status'),null);}finally{dom.window.close();}});
 
@@ -100,5 +103,36 @@ test('opening a saved email immediately shows clickable product mentions and edi
   assert.equal(preview.querySelectorAll('a[href="https://prepyr.com/"]').length,1);assert.equal(preview.querySelector('img'),null);assert.match(preview.textContent!,/hello@prepyr.com/);assert.match(preview.textContent!,/PrepyrData stays plain/);
   assert.equal(requests.filter(r=>r.path.endsWith('/edit')).length,0);await click('#draft-form button[type=submit]');assert.equal(requests.filter(r=>r.path.endsWith('/edit')).length,1);
   assert.ok(doc.querySelector('#email-preview a[href="https://prepyr.com/"]'));
+ }finally{dom.window.close();}
+});
+
+
+test('search progress exposes a percentage and stopping retains rows and the Send action',async()=>{
+ const {dom,doc,click,requests}=await boot({searching:true});try{
+  assert.match(doc.querySelector('.search-progress')!.textContent!,/33%.*1 \/ 3/);assert.equal(doc.querySelector('progress')!.getAttribute('value'),'33');
+  await click('[data-stop-search]');assert.equal(requests.find(r=>r.path==='/api/discovery/stop').body.cycleId,'cycle-1');assert.match(doc.querySelector('.search-progress')!.textContent!,/Stopped/);assert.ok(doc.querySelector('[data-open]'));
+  await click('[data-open]');assert.equal((doc.querySelector('[data-send]') as HTMLButtonElement).disabled,false);
+ }finally{dom.window.close();}
+});
+test('existing prospects can be sent during research and remain visible through a failed refresh',async()=>{
+ const {dom,doc,click,requests}=await boot({searching:true});try{
+  const original=dom.window.fetch;dom.window.fetch=(async(path:any,init:any)=>String(path).startsWith('/api/dashboard')?Response.json({error:'Temporary refresh failure'},{status:503}):original(path,init)) as any;
+  await click('#refresh');assert.ok(doc.querySelector('[data-open]'));assert.match(doc.querySelector('.search-progress')!.textContent!,/Researching/);
+  await click('[data-open]');await click('[data-send]');assert.equal(requests.filter(r=>r.path.endsWith('/approve')).length,1);assert.equal((doc.querySelector('#modal') as HTMLDialogElement).open,false);
+ }finally{dom.window.close();}
+});
+test('delete is the last row action and only removes a prospect after confirmation',async()=>{
+ const {dom,doc,click,requests}=await boot();try{
+  assert.ok(doc.querySelector('tbody tr td:last-child [data-delete-prospect]'));dom.window.confirm=()=>false;await click('[data-delete-prospect]');assert.equal(requests.filter(r=>r.path.endsWith('/delete')).length,0);
+  dom.window.confirm=()=>true;await click('[data-delete-prospect]');assert.equal(requests.filter(r=>r.path==='/api/prospects/l1/delete').length,1);assert.equal(doc.querySelector('[data-open]'),null);
+ }finally{dom.window.close();}
+});
+
+
+test('background polling adds newly qualified rows without closing or overwriting an open email',async()=>{
+ const {dom,doc,click,intervals}=await boot({searching:true});try{
+  await click('[data-open]');const body=doc.querySelector('[name="body"]') as HTMLTextAreaElement;body.value='Owner edits in progress';
+  const original=dom.window.fetch;dom.window.fetch=(async(path:any,init:any)=>{const response=await original(path,init);if(String(path).startsWith('/api/prospects?')){const result:any=await response.json();result.rows.push({...result.rows[0],id:'l2',company:'New qualified prospect',draft_id:'d2'});result.total=2;return Response.json(result);}return response;}) as any;
+  await intervals.find(x=>x.ms===10000)!.fn();assert.equal(doc.querySelectorAll('tbody tr').length,2);assert.ok(doc.querySelector('[data-open="l1"]'));assert.ok(doc.querySelector('[data-open="l2"]'));assert.equal((doc.querySelector('#modal') as HTMLDialogElement).open,true);assert.equal((doc.querySelector('[name="body"]') as HTMLTextAreaElement).value,'Owner edits in progress');
  }finally{dom.window.close();}
 });

@@ -1,3 +1,4 @@
+import {stopSearch,deleteProspect} from './search-controls';
 import {apifyRequest,linkedinActor} from './apify';
 import type { Env, Lead, Draft, Settings } from './types';
 import { acquire, all, audit, day, enqueue, month, now, one, release, run, settings } from './db';
@@ -79,6 +80,8 @@ async function dashboard(env:Env,compact=false,saved=false) {
 }
 async function mutate(request:Request,env:Env,path:string,input:any) {
  const s=await settings(env);
+ if(path==='/api/discovery/stop')return stopSearch(env,input.cycleId);
+ const removal=path.match(/^\/api\/prospects\/([^/]+)\/delete$/);if(removal)return deleteProspect(env,removal[1]);
  if(path==='/api/discovery/control')throw new Error('This control has been removed. Use Search prospects.');
  if(env.PRODUCT_ID&&(/^\/api\/(import)$/.test(path)||/\/(research|rewrite|approve)$/.test(path)))requireProductReady(env);
  if(['/api/settings','/api/settings/sender','/api/settings/locations','/api/settings/preferences'].includes(path)) {
@@ -117,7 +120,7 @@ async function mutate(request:Request,env:Env,path:string,input:any) {
  }
  const leadMatch=path.match(/^\/api\/leads\/([^/]+)\/(update|research|verify|suppress|close)$/);
  if(leadMatch) {
-  const [,id,action]=leadMatch;const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',id);if(!lead)throw new Error('Prospect not found');
+  const [,id,action]=leadMatch;const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',id);if(!lead||lead.status==='deleted')throw new Error('Prospect not found');
   if(action==='verify')throw new Error('Automatic mailbox verification was removed. Review the public email evidence or update the contact manually.');
   if(action==='research'){
    if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');
@@ -202,7 +205,7 @@ async function readWorkspace(request:Request,env:Env,saved=false):Promise<Respon
  if(path==='/api/dashboard'&&request.method==='GET')return json(await dashboard(env,url.searchParams.get('summary')==='1',saved));
  if(path==='/api/prospects'&&request.method==='GET')return json(await prospectPage(env,url));
  const detail=path.match(/^\/api\/prospects\/([^/]+)$/);
- if(detail&&request.method==='GET'){if(!await one(env,'SELECT id FROM leads WHERE id=?',detail[1]))return json({error:'Prospect not found'},404);return json(await prospectDetail(env,detail[1]));}
+ if(detail&&request.method==='GET'){if(!await one(env,"SELECT id FROM leads WHERE id=? AND status<>'deleted'",detail[1]))return json({error:'Prospect not found'},404);return json(await prospectDetail(env,detail[1]));}
  if(path==='/api/export'&&request.method==='GET')return json({leads:await all(env,'SELECT * FROM leads'),drafts:await all(env,'SELECT * FROM drafts'),messages:await all(env,'SELECT * FROM messages'),expenses:await all(env,'SELECT * FROM expenses'),suppressions:await all(env,'SELECT * FROM suppressions'),facts:await all(env,'SELECT * FROM business_facts'),searches:await all(env,'SELECT * FROM discovery_batches'),candidates:await all(env,'SELECT * FROM discovery_candidates'),tasks:await all(env,'SELECT * FROM jobs'),attempts:await all(env,'SELECT id,job_id,stage,state,expense_id,model,request_id,response_id,error,created_at,updated_at FROM ai_attempts')},200,{'Content-Disposition':'attachment; filename="relay-export.json"'});
  const preview=path.match(/^\/api\/drafts\/([^/]+)\/preview$/);
  if(preview&&request.method==='GET'){

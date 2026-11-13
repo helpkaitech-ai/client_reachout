@@ -1,3 +1,4 @@
+import {assertJobActive} from './job-control';
 import {emailStyleInstructions} from './email-style';
 import type {Env,Settings,Lead,Draft,Research,Evidence} from './types';
 import type {Workflow} from './ai';
@@ -24,7 +25,7 @@ export async function draftProductLead(env:Env,s:Settings,lead:Lead,kind:Draft['
  if(rewrite&&!existing)return;
  if(!rewrite&&await one(env,"SELECT id FROM drafts WHERE lead_id=? AND status IN ('pending','approved','sending','uncertain')",lead.id))return;
  if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Search target reached');
- if(lead.eligibility==='ineligible'||['suppressed','closed','bounced'].includes(lead.status)||await one({...env,DB:env.GLOBAL_DB||env.DB},'SELECT email FROM suppressions WHERE email=?',lead.email))return;
+ if(lead.eligibility==='ineligible'||['suppressed','closed','bounced','deleted'].includes(lead.status)||await one({...env,DB:env.GLOBAL_DB||env.DB},'SELECT email FROM suppressions WHERE email=?',lead.email))return;
  const discovered=await one<{data:string}>(env,'SELECT data FROM discovery_candidates WHERE lead_id=? ORDER BY created_at LIMIT 1',lead.id);
  const discoveryEvidence=discovered?JSON.parse(discovered.data):{sourceUrl:lead.source_url,role:lead.contact_name};
  if(kind==='initial'){const contactable=await prepareInitialContact(env,s,lead,w,rewrite);if(!contactable)return;lead=contactable;}
@@ -85,6 +86,7 @@ export async function draftProductLead(env:Env,s:Settings,lead:Lead,kind:Draft['
  const reason=quality?(parsed.holdReason||(!a.specific||!a.supported||!a.appropriate?a.reason:'Business fit or source evidence needs review')):'';
  if(quality){await rejectCandidate(env,lead,w.jobId,reason,rewrite);return;}
  const offer=JSON.stringify({type:'product',productId:env.PRODUCT_ID,authorizedFreeOffer:kind==='initial'?s.freeOffer:undefined,remarksApplied:parsed.remarksApplied,useCase:dossier.productUseCase});
+ await assertJobActive(env,w);
  await assertProductCurrent(env);
  const greeting=String(lead.contact_name||lead.company+' team').replace(/[\r\n]/g,' '),body=`Hi ${greeting},\n\n${String(parsed.body).trim()}`,subject=String(kind==='reply'?(messages.find(m=>m.direction==='inbound')?.subject||previous?.subject||parsed.subject):kind==='followup'?(previous?.subject||parsed.subject):parsed.subject).replace(/[\r\n]/g,' ').slice(0,180);
  if(kind==='initial'&&!await admissionAvailable(env,s,lead.id))throw new BudgetPaused('Search target reached');

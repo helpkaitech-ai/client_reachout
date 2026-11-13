@@ -37,9 +37,9 @@ export async function prospectPage(env:Env,url:URL){
  const q=(url.searchParams.get('q')||'').slice(0,150).toLowerCase();
  const search="instr(lower(company||' '||coalesce(email,'')||' '||city||' '||country),?)>0";
  const visible=records(env);
- const counts=await one(env,`${visible} SELECT ${Object.entries(groups).map(([key,where])=>`COALESCE(SUM(CASE WHEN ${where} THEN 1 ELSE 0 END),0) AS ${key==='all'?'total':key}`).join(',')},(SELECT COUNT(*) FROM drafts WHERE status='sent') sent FROM rows`);
+ const counts=await one(env,`${visible} SELECT ${Object.entries(groups).map(([key,where])=>`COALESCE(SUM(CASE WHEN ${where} THEN 1 ELSE 0 END),0) AS ${key==='all'?'total':key}`).join(',')},(SELECT COUNT(*) FROM drafts sd JOIN leads sl ON sl.id=sd.lead_id WHERE sd.status='sent' AND sl.status<>'deleted') sent FROM rows`);
  if(group==='sent'){
-  const from="FROM drafts d JOIN leads l ON l.id=d.lead_id WHERE d.status='sent' AND instr(lower(l.company||' '||coalesce(l.email,'')||' '||l.city||' '||l.country),?)>0";
+  const from="FROM drafts d JOIN leads l ON l.id=d.lead_id WHERE d.status='sent' AND l.status<>'deleted' AND instr(lower(l.company||' '||coalesce(l.email,'')||' '||l.city||' '||l.country),?)>0";
   const result=await all(env,`SELECT l.*,d.id draft_id,d.subject draft_subject,d.kind draft_kind,d.updated_at sent_at,'sent' email_status ${from} ORDER BY d.updated_at DESC,d.id DESC LIMIT ? OFFSET ?`,q,limit,offset);
   const total=await one<{n:number}>(env,`SELECT COUNT(*) n ${from}`,q);
   return {rows:result,counts,total:total?.n||0,offset,hasMore:offset+result.length<(total?.n||0)};

@@ -1,3 +1,4 @@
+import {assertJobActive,WorkCancelled} from './job-control';
 import type {Env,Product,Settings,Job} from './types';
 import {searchTarget} from './discovery-cycles';
 import {defaults} from './types';
@@ -73,7 +74,7 @@ export async function requestProductDiscovery(env:Env,target=12){
  if(p.state==='archived')throw new Error('This product is archived');
  if(!p.enabled)await run(root,'UPDATE products SET enabled=1 WHERE id=?',p.id);
  const scope=await scopeProduct(root,p);
- await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({revision:p.revision,target}));
+ await run(scope,"INSERT INTO integration_state(key,value) VALUES('manual_search_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({id:uid(),revision:p.revision,target}));
  if(p.state==='target_review'){await approveProduct(root,p.id,p.revision);return continueProductDiscovery(root,await product(root,p.id));}
  if(p.state==='approved'&&p.approved_revision===p.revision)return continueProductDiscovery(root,p);
  await queueProductAnalysis(root,p.id);
@@ -87,8 +88,8 @@ export async function continueProductDiscovery(root:Env,p:Product){
   await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");return;
  }
  const {startDiscovery}=await import('./discovery');
- const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true,false,request.target||12);
- if(['queued','running','researching'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request'");
+ const result=await startDiscovery(scope,await settings(scope),undefined,undefined,true,false,request.target||12,request.id||'legacy:'+request.revision);
+ if(['queued','running','researching'].includes(result.state))await run(scope,"DELETE FROM integration_state WHERE key='manual_search_request' AND value=?",row.value);
  return result;
 }
 async function searchDiagnostics(env:Env){
@@ -110,7 +111,8 @@ export async function queueProductAnalysis(env:Env,id:string,confirmRetry=false)
  const prior=await one<any>(scope,'SELECT * FROM jobs WHERE id=?',jobId);
  if(prior?.state==='uncertain')throw new Error('The previous request has an unknown outcome. Reconcile its provider charge before retrying');
  if(prior?.state==='complete')return {message:'Current product profile is ready'};
- if(prior&&['failed','paused_provider'].includes(prior.state)){
+ if(prior?.state==='cancelled'){await run(scope,"UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=?",now(),jobId);}
+ else if(prior&&['failed','paused_provider'].includes(prior.state)){
   if(!confirmRetry)throw new Error('Confirm the new paid extraction attempt before retrying');
   const payload=JSON.parse(prior.payload);payload.retryVersion=(payload.retryVersion||0)+1;await run(scope,"UPDATE jobs SET state='pending',error=NULL,payload=?,updated_at=? WHERE id=?",JSON.stringify(payload),now(),jobId);
  }else await enqueue(scope,'product_analysis',null,{revision:p.revision},jobId);
@@ -136,13 +138,15 @@ export async function advanceProductAnalysis(root:Env,p:Product){
   }
   if(!validUseCases(analysis.useCases)||!analysis.useCases.every((c:any)=>supportedCapability(c,p,outputText(report),collectSources(report)))||!analysis.productSummary||!analysis.targetingRationale||!Array.isArray(analysis.campaigns)||!analysis.campaigns.length||analysis.campaigns.some((c:any)=>!c.query?.trim()||!c.location?.trim()||!/^[A-Z]{2}$/.test(c.country)||!validTimezone(c.timezone)))throw new Error('OpenAI profile lacks grounded use cases, capability evidence or valid search scopes; review product facts and retry extraction');
   const listed=new Set(collectSources(report).map(s=>s.url));analysis.sources=analysis.sources.filter((s:any)=>listed.has(s.url));
+  await assertJobActive(env,w);
   const saved=await run(root,"UPDATE products SET analysis=?,state='target_review',error=NULL,updated_at=? WHERE id=? AND revision=? AND state='analyzing'",JSON.stringify(analysis),now(),p.id,p.revision);
   if(!saved.meta.changes)return;
   await approveProduct(root,p.id,p.revision);
   await run(env,"UPDATE jobs SET state='complete',error=NULL,updated_at=? WHERE id=?",now(),jobId);
  }catch(e){
+  if(e instanceof WorkCancelled)return;
   const error=e instanceof Error?e.message:'Product research failed';
-  if(e instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=?",now(),jobId);return;}
+  if(e instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=? AND state='running'",now(),jobId);return;}
   const state=e instanceof BudgetPaused?'paused':e instanceof OpenAICreditBlocked||/credit_balance_exhausted|insufficient_quota|billing_hard_limit_reached/.test(error)?'paused_provider':e instanceof UncertainProviderError?'uncertain':'failed';
   await run(env,'UPDATE jobs SET state=?,error=?,updated_at=? WHERE id=?',state,error,now(),jobId);
   await run(root,"UPDATE products SET state=?,error=?,updated_at=? WHERE id=? AND revision=?",state==='paused'?'analyzing':state,error,now(),p.id,p.revision);

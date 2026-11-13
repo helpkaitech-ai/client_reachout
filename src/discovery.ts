@@ -1,3 +1,4 @@
+import {assertJobActive} from './job-control';
 import {searchUserLocation} from './locations';
 import {enrichWorkEmails} from './work-emails';
 import {verifiedWorkContact} from './work-email-policy';
@@ -22,13 +23,14 @@ export {importLead} from './leads';
 const candidateSchema=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,company:str,website:str,city:str,country:str,description:str,industry:str,independence:{type:'string',enum:['independent','chain','unknown']},size:{type:'string',enum:['small_or_midsize','large','unknown']},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 const productCandidates=objectSchema({candidates:{type:'array',maxItems:10,items:objectSchema({publicContact:contactSchema,productFit:fitSignalSchema,company:str,contact_name:str,website:str,city:str,country:str,description:str,industry:str,targetMatch:{type:'boolean'},contactScope:{type:'string',enum:['organization','public_professional','private_consumer']},sensitivePersonalTarget:{type:'boolean'},fitEvidence:str,sourceUrl:str,evidenceExcerpt:str})}});
 export async function searchHistory(env:Env){return all<SearchHistory>(env,"SELECT json_extract(campaign,'$.location') location,json_extract(campaign,'$.country') country,COUNT(*) uses,MAX(created_at) last_used FROM discovery_batches GROUP BY location,country");}
-export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=true,continuation=false,target=s.dailyLeadLimit){
+export async function startDiscovery(env:Env,s:Settings,selected?:Campaign,intent?:string,manual=true,continuation=false,target=s.dailyLeadLimit,requestId?:string){
  const owner=await acquire(env,'discovery-enqueue',60);
  if(!owner)return {state:'queued',runId:undefined,message:'Search already queued.'};
- try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation,target);}finally{await release(env,'discovery-enqueue',owner);}
+ try{return await enqueueDiscovery(env,s,selected,intent,manual,continuation,target,requestId);}finally{await release(env,'discovery-enqueue',owner);}
 }
-async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean,target:number){
+async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,intent:string|undefined,manual:boolean,continuation:boolean,target:number,requestId?:string){
  requireProductReady(env);
+ if(requestId){const saved=await one<any>(env,"SELECT value FROM integration_state WHERE key='manual_search_request'");const request=saved?JSON.parse(saved.value):null;if(!request||(request.id||'legacy:'+request.revision)!==requestId)return {state:'stopped',message:'Search stopped.'};}
  if(!manual)return {state:'manual_only',message:'Click Find prospects to start a search. Recurring searches are disabled.'};
  if(!env.OPENAI_API_KEY)throw new Error('Configure OpenAI before finding prospects');
  const active=await one<any>(env,"SELECT * FROM discovery_batches WHERE state IN ('queued','running','budget_paused') AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=discovery_batches.job_id AND j.state NOT IN ('cancelled','complete','failed') AND json_extract(j.payload,'$.manual')=1) ORDER BY created_at LIMIT 1");
@@ -50,6 +52,7 @@ async function enqueueDiscovery(env:Env,s:Settings,selected:Campaign|undefined,i
  return {state:'queued',runId:id,message:`Searching in ${campaign.location}…`};
 }
 export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
+ await assertJobActive(env,w);
  requireProductReady(env);
  const p=JSON.parse(job.payload),batch=await one<any>(env,'SELECT * FROM discovery_batches WHERE id=?',p.batchId);if(!batch)throw new Error('Search batch not found');
  const campaign:Campaign=JSON.parse(batch.campaign);
@@ -103,6 +106,7 @@ export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
  const prior=new Set((await all<any>(env,'SELECT entity_key FROM discovery_candidates WHERE batch_id=?',batch.id)).map(x=>x.entity_key));
  let processed=0,remaining=false;
  for(const c of parsed.candidates.slice(0,maximumCandidates)){
+  await assertJobActive(env,w);
   const key=entityKey(String(c.company||''),String(c.website||''),String(c.city||''));
   if(prior.has(key))continue;
   if(processed>=3){remaining=true;break;}processed++;
@@ -125,6 +129,7 @@ export async function runDiscovery(env:Env,s:Settings,job:Job,w:Workflow){
   prior.add(key);
  }
  if(remaining)throw new StageYield('Remaining discovery candidates queued for the next cycle');
+ await assertJobActive(env,w);
  const counts=await one<any>(env,"SELECT COUNT(*) n,SUM(outcome='imported') imported,SUM(outcome='duplicate') duplicates,SUM(outcome NOT IN ('imported','duplicate')) held FROM discovery_candidates WHERE batch_id=?",batch.id);
  await run(env,'UPDATE discovery_batches SET state=?,candidates=?,imported=?,duplicates=?,held=?,updated_at=? WHERE id=?',counts.n?'complete':'no_results',counts.n,counts.imported||0,counts.duplicates||0,counts.held||0,now(),batch.id);
  await audit(env,'discovery_completed',batch.id,`${counts.imported||0} email-sourced matching businesses; ${counts.duplicates||0} duplicates; ${counts.held||0} rejected before enrichment`);

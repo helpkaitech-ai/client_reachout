@@ -1,9 +1,17 @@
+import {assertJobActive,WorkCancelled} from './job-control';
 import type {Env} from './types';
 import {one,run,now,audit} from './db';
 export class OpenAICreditBlocked extends Error {constructor(){super('OpenAI credits need attention. Update billing for the deployed key, then confirm in Settings before retrying.');}}
 const root=(env:Env)=>({...env,DB:env.GLOBAL_DB||env.DB});
 export async function providerBlock(env:Env){const row=await one<{value:string}>(root(env),"SELECT value FROM integration_state WHERE key='openai_credit_block'");return row?JSON.parse(row.value):null;}
-export async function assertProviderAvailable(env:Env){if(await providerBlock(env))throw new OpenAICreditBlocked();}
+export async function assertProviderAvailable(env:Env,workflow?:{jobId:string}){
+ if(workflow&&(!env.GLOBAL_DB||env.GLOBAL_DB===env.DB)){
+  const state=await one<any>(env,`SELECT (SELECT value FROM integration_state WHERE key='openai_credit_block') credit,(SELECT state FROM jobs WHERE id=?) job_state,(SELECT l.status FROM leads l JOIN jobs j ON j.lead_id=l.id WHERE j.id=?) lead_status`,workflow.jobId,workflow.jobId);
+  if(state?.job_state==='cancelled'||state?.lead_status==='deleted')throw new WorkCancelled();
+  if(state?.credit)throw new OpenAICreditBlocked();return;
+ }
+ await assertJobActive(env,workflow);if(await providerBlock(env))throw new OpenAICreditBlocked();
+}
 export async function blockProvider(env:Env,code:string){
  if(!['credit_balance_exhausted','insufficient_quota','billing_hard_limit_reached'].includes(code))return;
  await run(root(env),"INSERT INTO integration_state(key,value) VALUES('openai_credit_block',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({code,at:now(),message:'The OpenAI billing scope used by the deployed key rejected a request. No further paid work starts until the owner confirms billing is fixed.'}));

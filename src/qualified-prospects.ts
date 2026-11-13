@@ -7,7 +7,7 @@ import {cleanEmail,publicUrl} from './policy';
 // Sent conversations retain their history even after their research ages.
 export function readyDraftSql(product:boolean,l='l',d='d',saved=false){
  return `${d}.status IN ('pending','approved','sending','sent')
- AND ${l}.status NOT IN ('suppressed','closed','bounced','not_qualified')
+ AND ${l}.status NOT IN ('suppressed','closed','bounced','deleted','not_qualified')
  AND ${l}.eligibility<>'ineligible' AND ${l}.verification<>'invalid'
  AND instr(coalesce(${l}.email,''),'@')>1 AND coalesce(${d}.quality_hold,'')=''
  AND length(trim(${d}.subject)) BETWEEN 1 AND 180 AND instr(${d}.subject,char(10))=0 AND instr(${d}.subject,char(13))=0

@@ -1,3 +1,4 @@
+import {assertJobActive} from './job-control';
 import type {Env,Settings,Campaign} from './types';
 import {one,run,now,reserve,settle,uncertainExpense,audit} from './db';
 import {StageYield,type Workflow} from './ai';
@@ -55,6 +56,7 @@ async function startupCompanyFilter(env:Env,s:Settings,jobId:string,campaign:Cam
  return [...new Set<string>(companies.filter((c:any)=>/^https:\/\/(?:[a-z]+\.)?linkedin\.com\/company\/[^/?#]+/.test(c.linkedinUrl)&&sources.some(source=>sourceKey(source.url)===sourceKey(c.linkedinUrl))).map((c:any)=>c.linkedinUrl.split('?')[0].replace(/\/$/,'')))].slice(0,12);
 }
 export async function linkedinDiscovery(env:Env,s:Settings,jobId:string,campaign:Campaign,w:Workflow,index=0):Promise<SourcePage[]>{
+ await assertJobActive(env,w);
  if(s.discoveryProvider!=='hybrid')return [];
  if(!env.APIFY_TOKEN)throw new Error('LinkedIn discovery requires APIFY_TOKEN in Cloudflare Worker secrets');
  const key=jobId+':apify',saved=await one<{data:string}>(env,'SELECT data FROM pipeline_results WHERE job_id=?',key);
@@ -66,6 +68,7 @@ export async function linkedinDiscovery(env:Env,s:Settings,jobId:string,campaign
  if(!state){
   const currentCompanies=await startupCompanyFilter(env,s,jobId,campaign,w,index);
   const result=await openai(env,s,JSON.stringify({location:campaign.location,country:campaign.country,searchAngle:campaign.query,index}),`${researchSecurity} Plan ONE bounded LinkedIn people search using the owner product profile and workspace targeting. Choose 1-4 related current professional job titles and optionally ONE business-context word as searchQuery. Never include activities, deliverables or pain keywords in searchQuery. Rotate departments across searchIndex; include actual users as well as buyers. Never require founder/owner status, small company size, technology industry, a repeated reporting cadence, spreadsheet pain or exact file format unless the owner explicitly requires it. Prefer a broad role filter and a simple business context keyword; do not AND-stack constraints. Empty searchQuery is valid when titles suffice. Do not invent a company list or location. Return only the search input.`,jobId+':linkedin-plan',{schema:planSchema,workflow:w,stage:'linkedin_plan',maxOutput:1000});
+  await assertJobActive(env,w);
   const input=actorInput(JSON.parse(outputText(result)),campaign,index,s.customerTypes,currentCompanies);
   const expenseId=await reserve(env,'apify',s.apifyRunCap,s.apifyBudget,jobId+':linkedin');
   state={state:'submitting',expenseId,startedAt:now()};

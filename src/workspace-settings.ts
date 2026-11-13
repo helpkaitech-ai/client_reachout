@@ -2,7 +2,7 @@ import type {Env,Settings,Product} from './types';
 import {run,one,now} from './db';
 import {cleanEmail} from './policy';
 
-const targetingKeys=['offerContext','freeOffer','portfolio','locationIds','customerTypes','customerDescription','customerComments'] as const;
+const targetingKeys=['offerContext','freeOffer','portfolio','customerTypes','customerDescription','customerComments'] as const;
 export async function prepareWorkspaceSettings(env:Env,previous:Settings,next:Settings,senderInput?:unknown){
  let profileChanged=false;
  if(env.PRODUCT_ID){

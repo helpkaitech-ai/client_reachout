@@ -31,7 +31,7 @@ export function approvalProblems(d:Draft,l:Lead,s:Settings):string[] {
  if(!['valid','manual','owner_reviewed'].includes(l.verification)) errors.push(l.verification==='invalid'?'Email verification failed; replace this recipient address':'Recipient review is required');
  if(l.eligibility!=='eligible'||!l.eligibility_note.trim()) errors.push('Document the outreach eligibility for this business and country');
  if(l.contact_status==='conflicting')errors.push('Public contact evidence conflicts with the recipient; resolve it in contact review');
- if(['suppressed','bounced','closed'].includes(l.status)) errors.push('This business is blocked from outreach');
+ if(['suppressed','bounced','closed','deleted'].includes(l.status)) errors.push('This business is blocked from outreach');
  if(d.kind==='followup'&&(l.last_inbound_at||!l.next_followup_at||l.followup_count>=Math.min(3,s.followupDays.length)))errors.push('This follow-up sequence has stopped or reached its limit');
  if(d.quality_hold)errors.push(d.quality_hold);
  if(!d.subject.trim()||d.subject.length>180||/[\r\n]/.test(d.subject)) errors.push('Use a single-line subject of 1–180 characters');

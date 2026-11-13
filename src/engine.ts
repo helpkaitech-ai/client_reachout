@@ -1,3 +1,4 @@
+import {WorkCancelled} from './job-control';
 import type {Env,Job,Lead,Settings} from './types';
 import {acquire,all,audit,BudgetPaused,claimResearchBusiness,day,enqueue,now,one,release,run,settings} from './db';
 import {startDiscovery,runDiscovery} from './discovery';
@@ -48,7 +49,7 @@ export async function processJob(env:Env,job:Job){
   }
   else if(['research','rewrite','followup','reply'].includes(job.kind)){
    const lead=await one<Lead>(env,'SELECT * FROM leads WHERE id=?',job.lead_id);if(!lead)throw new Error('Prospect not found');
-   if(['suppressed','closed'].includes(lead.status))throw new Error('Prospect is not active');
+   if(['suppressed','closed','deleted'].includes(lead.status))throw new Error('Prospect is not active');
    if(job.kind==='research'&&!await admissionAvailable(env,s,lead.id)){
     await run(env,"UPDATE jobs SET state='cancelled',error='Search target reached',next_run_at=NULL,updated_at=? WHERE id=?",now(),job.id);return;
    }
@@ -64,13 +65,14 @@ export async function processJob(env:Env,job:Job){
   }else throw new Error('Retired or unsupported task type');
   await run(env,"UPDATE jobs SET state='complete',error=NULL,next_run_at=NULL,updated_at=? WHERE id=? AND state='running'",now(),job.id);return result;
  }catch(error){
+  if(error instanceof WorkCancelled){await run(env,"UPDATE jobs SET state='cancelled',error=?,updated_at=? WHERE id=? AND state='running'",error.message,now(),job.id);return {state:'cancelled'};}
   if(error instanceof StageYield){await run(env,"UPDATE jobs SET state='pending',updated_at=? WHERE id=? AND state='running'",now(),job.id);return {state:'pending'};}
   const message=error instanceof Error?error.message:'Task failed';
   const budget=error instanceof BudgetPaused,providerQuota=error instanceof OpenAICreditBlocked||error instanceof ProviderError&&error.status===429;
   if(providerQuota&&job.kind==='research'&&job.lead_id)await releaseUnspentResearchClaim(env,job.lead_id);
   const state=budget?'paused':providerQuota?'paused_provider':error instanceof UncertainProviderError?'uncertain':'failed';
   await run(env,"UPDATE jobs SET state=?,error=?,next_run_at=?,updated_at=? WHERE id=? AND state='running'",state,message.slice(0,400),budget?new Date(Date.now()+60000).toISOString():null,now(),job.id);
-  if(job.kind==='discover_search')await run(env,'UPDATE discovery_batches SET state=?,error=?,updated_at=? WHERE job_id=?',budget?'budget_paused':state,message.slice(0,400),now(),job.id);
+  if(job.kind==='discover_search')await run(env,"UPDATE discovery_batches SET state=?,error=?,updated_at=? WHERE job_id=? AND state<>'cancelled'",budget?'budget_paused':state,message.slice(0,400),now(),job.id);
   if(!budget)await audit(env,'job_'+state,job.id,message);
  }
 }

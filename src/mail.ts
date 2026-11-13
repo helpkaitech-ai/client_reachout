@@ -80,7 +80,7 @@ async function dispatchApproved(env:Env,s:Settings,draftId?:string,work?:{proces
  const messageId=`<${draft.id}@${env.SENDER_EMAIL.split('@')[1]}>`;
  const raw=mimeMessage({from:env.SENDER_EMAIL,name:s.senderName,to:lead.email!,subject:draft.subject,body:composedBody(draft,s,await unsubscribeUrl(env,lead.id)),html:composedHtml(draft,s,await unsubscribeUrl(env,lead.id),productLink(env)),messageId,replyToId:draft.in_reply_to,unsubscribe:await unsubscribeUrl(env,lead.id)});
  const claimed=await run(env,`UPDATE drafts SET status='sending',message_id=?,updated_at=? WHERE id=? AND status='approved' AND version=?
- AND NOT EXISTS(SELECT 1 FROM suppressions WHERE email=?) AND EXISTS(SELECT 1 FROM leads WHERE id=? AND status NOT IN ('suppressed','closed','bounced'))`,messageId,now(),draft.id,draft.version,lead.email,lead.id);
+ AND NOT EXISTS(SELECT 1 FROM suppressions WHERE email=?) AND EXISTS(SELECT 1 FROM leads WHERE id=? AND status NOT IN ('suppressed','closed','bounced','deleted'))`,messageId,now(),draft.id,draft.version,lead.email,lead.id);
  if(!claimed.meta.changes)return;
  try {
   const result=await sendGmail(env,raw,lead.thread_id);
@@ -112,6 +112,7 @@ function bodyText(part:any):string {
  return '';
 }
 export async function ingestMessage(env:Env,lead:Lead,message:any) {
+ if((await one<Lead>(env,'SELECT * FROM leads WHERE id=?',lead.id))?.status==='deleted')return;
  const existing=await one<any>(env,"SELECT * FROM messages WHERE id=? AND direction='inbound'",message.id);
  if(existing){await inboundNotice(env,lead,message.id,existing.classification,existing.body);return;}
  const headers:Record<string,string>={};for(const h of message.payload?.headers||[])headers[h.name.toLowerCase()]=h.value;

@@ -1,3 +1,4 @@
+import {assertJobActive,WorkCancelled} from './job-control';
 import type {Env,Settings} from './types';
 import {BudgetPaused,month,now,one,run,uid,reserve,settle,uncertainExpense} from './db';
 import {jsonRequest,ProviderError,UncertainProviderError,rates} from './providers';
@@ -59,7 +60,7 @@ export async function requestOpenAI(env:Env,s:Settings,input:string,instructions
   if(prior&&prior.retry_version>=(w.retryVersion||0))throw new Error(prior.error||'Explicit paid retry required');
   if(w.paidCalls>=1)throw new StageYield('Next research stage queued');
  }
- await assertProviderAvailable(env);
+ await assertProviderAvailable(env,w);
  const model=options.search?(env.OPENAI_RESEARCH_MODEL||'gpt-5.4-mini'):(options.schema&&(options.stage?.includes('contact')||options.stage?.includes('assess')||options.stage?.includes('extract'))?(env.OPENAI_RESEARCH_MODEL||'gpt-5.4-mini'):(env.OPENAI_DRAFT_MODEL||'gpt-5.6-sol'));
  const rate=rates[model];if(!rate)throw new Error('Unsupported model pricing; update the rate table before switching models');
  const maxOutput=options.maxOutput||(options.search?2800:2200),maxTools=options.maxTools||4;
@@ -107,8 +108,10 @@ export async function requestOpenAI(env:Env,s:Settings,input:string,instructions
     await settle(env,expenseId,actual,`Token usage + ${toolUsage.count} ${toolUsage.estimated?'estimated':'provider-reported'} billable searches; invoice authoritative`);usageKnown=true;
    }else await uncertainExpense(env,expenseId);
    if(data.status!=='completed')throw new Error(`OpenAI response ${data.status||'incomplete'}; stored output needs review`);
+   await assertJobActive(env,w);
    return data;
   }catch(error){
+   if(error instanceof WorkCancelled)throw error;
    if(error instanceof ProviderError&&[400,401,402,403,404,429].includes(error.status)){
     await settle(env,expenseId,0,'Request definitively rejected before generation');
     if(attemptId)await run(env,"UPDATE ai_attempts SET state='rejected',error=?,updated_at=? WHERE id=?",error.message,now(),attemptId);
