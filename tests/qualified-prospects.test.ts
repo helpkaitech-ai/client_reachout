@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import worker from '../src/index';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {database,readyLead,readyDraft,testSettings} from './helpers';
@@ -203,5 +205,42 @@ test('per-search research and empty-result bounds stop continuations but allow a
   const cycle=await one<any>(x.scope,'SELECT * FROM discovery_cycles ORDER BY rowid DESC LIMIT 1');await run(x.scope,'UPDATE discovery_cycles SET research_limit=1 WHERE id=?',cycle.id);
   for(let i=0;i<5;i++){await run(x.scope,"UPDATE jobs SET state='complete'");await run(x.scope,"UPDATE discovery_batches SET state='no_results'");assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'queued');}
   await run(x.scope,"UPDATE jobs SET state='complete'");await run(x.scope,"UPDATE discovery_batches SET state='no_results'");assert.equal((await startDiscovery(x.scope,await settings(x.scope),undefined,undefined,true,true)).state,'manual_only');assert.equal((await all(x.scope,'SELECT * FROM discovery_cycles')).length,2);
+ }finally{x.close();}
+});
+
+
+test('product and targeting edits keep saved qualified prospects listed without changing their drafts or clearing actual holds',async()=>{
+ const x=await setup();try{
+  const good=await eligible(x.scope),held=await eligible(x.scope,'Held','held@example.org');
+  await recordAdmission(x.scope,good.lead.id,good.draft.id);
+  await run(x.scope,"UPDATE drafts SET quality_hold='Insufficient evidence' WHERE id=?",held.draft.id);
+  const call=(path:string,body?:any,cookie='')=>worker.fetch(new Request(x.env.APP_URL+path,{method:body===undefined?'GET':'POST',headers:{Origin:x.env.APP_URL!,'X-Requested-With':'Prepyr',Cookie:cookie},...(body===undefined?{}:{body:JSON.stringify(body)})}),x.env,{waitUntil:()=>{}} as any);
+  const login=await call('/api/login',{password:x.env.ADMIN_PASSWORD}),cookie=login.headers.get('set-cookie')!.split(';')[0];
+  for(const change of ['description','remarks','customerDescription','preferences']){
+   const current=await product(x.env,x.p.id),input={...current,[change]:'Changed '+change};
+   const response=change==='preferences'?await call('/api/settings/preferences?product='+x.p.id,{...await settings(x.scope),freeOffer:'A free sample report using one prepared spreadsheet export'},cookie):await call('/api/products/'+x.p.id,input,cookie);
+   assert.equal(response.status,200,change+': '+await response.text());
+   const list=await call('/api/prospects?product='+x.p.id,undefined,cookie),page=await list.json() as any;
+   assert.equal(list.status,200);assert.deepEqual(page.rows.map((r:any)=>r.id),[good.lead.id],change);assert.equal(page.rows[0].email_status,'pending');
+   const saved=await one<any>(x.scope,'SELECT * FROM drafts WHERE id=?',good.draft.id);
+   assert.equal(saved.body,good.draft.body);assert.equal(saved.subject,good.draft.subject);assert.equal(saved.quality_hold,'');assert.equal(saved.approved_hash,null);
+   assert.equal((await one<any>(x.scope,'SELECT quality_hold FROM drafts WHERE id=?',held.draft.id)).quality_hold,'Insufficient evidence');
+  }
+  assert.equal((await all(x.scope,'SELECT * FROM ai_attempts')).length,0);assert.equal((await all(x.scope,'SELECT * FROM messages')).length,0);
+ }finally{x.close();}
+});
+
+test('edit-hold recovery restores only previously admitted drafts and preserves real quality failures',async()=>{
+ const x=await setup();try{
+  const restored=await eligible(x.scope),unknown=await eligible(x.scope,'Unqualified','unknown@example.org'),held=await eligible(x.scope,'Held','held@example.org');
+  await recordAdmission(x.scope,restored.lead.id,restored.draft.id);await recordAdmission(x.scope,held.lead.id,held.draft.id);
+  await run(x.scope,"UPDATE drafts SET quality_hold='Product details changed; review or improve this draft against the refreshed profile'");
+  await run(x.scope,"UPDATE drafts SET quality_hold='Insufficient evidence' WHERE id=?",held.draft.id);
+  assert.equal((await prospectPage(x.scope,page)).total,0);
+  await run(x.scope,fs.readFileSync('migrations/0017_preserve_product_edit_prospects.sql','utf8'));
+  assert.deepEqual((await prospectPage(x.scope,page)).rows.map((r:any)=>r.id),[restored.lead.id]);
+  assert.equal((await one<any>(x.scope,'SELECT quality_hold FROM drafts WHERE id=?',held.draft.id)).quality_hold,'Insufficient evidence');
+  assert.match((await one<any>(x.scope,'SELECT quality_hold FROM drafts WHERE id=?',unknown.draft.id)).quality_hold,/Product details changed/);
+  assert.equal((await one<any>(x.scope,'SELECT body FROM drafts WHERE id=?',restored.draft.id)).body,restored.draft.body);
  }finally{x.close();}
 });

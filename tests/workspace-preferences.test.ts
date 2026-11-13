@@ -43,7 +43,7 @@ test('targeting changes invalidate stale approvals and preserve sent history, wh
   const sentLead=await readyLead(scope,{company:'Sent',website:'https://sent.example.org',email:'sent@example.org'}),sent=await readyDraft(scope,sentLead);await run(scope,"UPDATE drafts SET status='sent' WHERE id=?",sent.id);
   response=await req(env,'/api/settings/preferences?product='+a.id,{...await settings(scope),customerTypes:['agencies'],customerDescription:'Video production agencies'},cookie);assert.equal(response.status,200);
   const p=await product(env,a.id);assert.equal(p.state,'draft');assert.equal(p.revision,a.revision+1);assert.equal(p.approved_revision,null);assert.equal((await settings(scope)).prospectingPaused,undefined);
-  const held=await one<any>(scope,'SELECT * FROM drafts WHERE id=?',draft.id);assert.equal(held.body,draft.body);assert.equal(held.status,'pending');assert.equal(held.approved_hash,null);assert.match(held.quality_hold,/targeting/);assert.equal((await one<any>(scope,'SELECT status FROM drafts WHERE id=?',sent.id)).status,'sent');
+  const held=await one<any>(scope,'SELECT * FROM drafts WHERE id=?',draft.id);assert.equal(held.body,draft.body);assert.equal(held.status,'pending');assert.equal(held.approved_hash,null);assert.equal(held.quality_hold,'');assert.equal((await one<any>(scope,'SELECT status FROM drafts WHERE id=?',sent.id)).status,'sent');
   await assert.rejects(openai(scope,testSettings,'x','x','stale',{search:true,stage:'business_research',workflow:{jobId:'stale',paidCalls:0}}),/changed/);assert.equal((await product(env,b.id)).revision,b.revision);
  }finally{close();}
 });

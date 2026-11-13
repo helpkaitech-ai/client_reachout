@@ -98,7 +98,7 @@ test('product edits revoke target approval and unsent approvals while preserving
   const p=await approved(env),scope=await scopeProduct(env,p),lead=await readyLead(scope),d=await readyDraft(scope,lead);
   await run(scope,"INSERT INTO messages(id,lead_id,direction,subject,body,created_at) VALUES('prior',?,'outbound','Saved subject','Saved body',?)",lead.id,now());
   await saveProduct(env,{...input,revision:p.revision,remarks:'New product details'},p.id);
-  const next=await product(env,p.id),saved=await one<any>(scope,'SELECT * FROM drafts');assert.equal(next.state,'draft');assert.equal(next.approved_revision,null);assert.equal(saved.body,d.body);assert.equal(saved.approved_hash,null);assert.match(saved.quality_hold,/Product details changed/);assert.equal((await one<any>(scope,'SELECT body FROM messages')).body,'Saved body');
+  const next=await product(env,p.id),saved=await one<any>(scope,'SELECT * FROM drafts');assert.equal(next.state,'draft');assert.equal(next.approved_revision,null);assert.equal(saved.body,d.body);assert.equal(saved.approved_hash,null);assert.equal(saved.quality_hold,'');assert.equal((await one<any>(scope,'SELECT body FROM messages')).body,'Saved body');
   await assert.rejects(saveProduct(env,{...input,revision:p.revision},p.id),/another window/);
  }finally{globalThis.fetch=original;close();}
 });

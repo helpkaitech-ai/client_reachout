@@ -18,7 +18,7 @@ export async function prepareWorkspaceSettings(env:Env,previous:Settings,next:Se
    // contexts cannot spend or send against the new configuration.
    await env.DB.batch([
     env.DB.prepare("UPDATE jobs SET state='cancelled',updated_at=? WHERE state IN ('pending','running','paused','paused_provider')").bind(now()),
-    env.DB.prepare("UPDATE drafts SET status='pending',quality_hold='Workspace targeting or offer changed; review or improve this draft against the refreshed profile',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(now())
+    env.DB.prepare("UPDATE drafts SET status='pending',approved_hash=NULL,approved_version=NULL,approved_at=NULL,updated_at=? WHERE status IN ('pending','approved')").bind(now())
    ]);
   }else if(sender!==p.sender_email){
    await run(root,'UPDATE products SET sender_email=?,updated_at=? WHERE id=? AND revision=?',sender,now(),p.id,p.revision);
