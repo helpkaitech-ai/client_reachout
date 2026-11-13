@@ -29,7 +29,7 @@ async function boot(options:{searching?:boolean;blocked?:boolean;anonymous?:bool
   if(path.startsWith('/api/settings/')){data.settings={...data.settings,...JSON.parse(init.body)};return Response.json({ok:true,settings:data.settings,connections:data.connections});}
   return Response.json(data);
  };
- dom.window.eval(fs.readFileSync('public/theme.js','utf8'));dom.window.eval(code);await flush();const click=async(s:string)=>{(doc.querySelector(s) as HTMLElement).click();await flush();};return {dom,doc,requests,click,draft,intervals};
+ dom.window.eval(fs.readFileSync('public/theme.js','utf8'));dom.window.eval(code);await flush();const click=async(s:string)=>{(doc.querySelector(s) as HTMLElement).click();await flush();};return {dom,doc,requests,click,draft,intervals,data};
 }
 test('opens on Prospects with product research navigation, plain statuses and no Needs attention filter',async()=>{const {dom,doc}=await boot();try{assert.deepEqual([...doc.querySelectorAll('[data-view]')].map(x=>(x as HTMLElement).dataset.view),['products','prospects','dashboard','settings']);assert.equal(doc.querySelector('#breadcrumb')?.textContent,'Prospects');assert.match(doc.querySelector('#content')!.textContent!,/Pending send/);assert.doesNotMatch(doc.querySelector('#content')!.textContent!,/initial draft|Discovery & drafting|Review queue/);assert.equal(doc.querySelector('#status-filter option[value="attention"]'),null);assert.ok(doc.querySelector('[name="searchTarget"]'));assert.equal(doc.querySelector('#live-status'),null);}finally{dom.window.close();}});
 
@@ -108,9 +108,11 @@ test('opening a saved email immediately shows clickable product mentions and edi
 
 
 test('search progress exposes a percentage and stopping retains rows and the Send action',async()=>{
- const {dom,doc,click,requests}=await boot({searching:true});try{
+ const {dom,doc,click,requests,data}=await boot({searching:true});try{
   assert.match(doc.querySelector('.search-progress')!.textContent!,/33%.*1 \/ 3/);assert.equal(doc.querySelector('progress')!.getAttribute('value'),'33');
-  await click('[data-stop-search]');assert.equal(requests.find(r=>r.path==='/api/discovery/stop').body.cycleId,'cycle-1');assert.match(doc.querySelector('.search-progress')!.textContent!,/Stopped/);assert.ok(doc.querySelector('[data-open]'));
+  await click('[data-stop-search]');assert.equal(requests.find(r=>r.path==='/api/discovery/stop').body.cycleId,'cycle-1');assert.equal(doc.querySelector('.search-progress'),null);assert.ok(doc.querySelector('[data-open]'));
+  for(const state of ['complete','not_started','research_limit','search_limit']){data.metrics.campaign.state=state;await click('#refresh');assert.equal(doc.querySelector('.search-progress'),null,state);}
+  data.metrics.campaign.state='profiling';data.metrics.campaign.canStop=true;await click('#refresh');assert.ok(doc.querySelector('.search-progress'));
   await click('[data-open]');assert.equal((doc.querySelector('[data-send]') as HTMLButtonElement).disabled,false);
  }finally{dom.window.close();}
 });
